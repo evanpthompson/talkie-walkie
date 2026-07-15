@@ -7,6 +7,7 @@ import android.content.Intent
 import android.media.AudioManager
 import android.os.Binder
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.talkiewalkie.BuildConfig
 import com.talkiewalkie.MainActivity
@@ -70,6 +71,8 @@ class WalkieTalkieService : Service() {
     private var txTimeoutJob:        Job? = null
     private var rxLevelDecayJob:     Job? = null
 
+    private var wakeLock: PowerManager.WakeLock? = null
+
     private var lastRxMs = 0L
 
     private val _state = MutableStateFlow(WalkieState())
@@ -94,6 +97,7 @@ class WalkieTalkieService : Service() {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Ready"))
         observeAudioMode()
+        observeWakeLock()
     }
 
     private fun observeAudioMode() {
@@ -105,6 +109,29 @@ class WalkieTalkieService : Service() {
                     val am = getSystemService(AUDIO_SERVICE) as AudioManager
                     am.mode = if (isActive) AudioManager.MODE_IN_COMMUNICATION
                               else          AudioManager.MODE_NORMAL
+                }
+        }
+    }
+
+    // Hold a PARTIAL_WAKE_LOCK for the entire time the device is in a channel
+    // (including Searching and Reconnecting states) so the reconnect coroutine
+    // and BT I/O threads are not suspended by Doze or screen-off.
+    private fun observeWakeLock() {
+        scope.launch {
+            state
+                .map { it.role != Role.NONE }
+                .distinctUntilChanged()
+                .collect { inChannel ->
+                    if (inChannel) {
+                        val pm = getSystemService(PowerManager::class.java)
+                        wakeLock = pm.newWakeLock(
+                            PowerManager.PARTIAL_WAKE_LOCK,
+                            "com.talkiewalkie:channel",
+                        ).also { it.acquire() }
+                    } else {
+                        wakeLock?.release()
+                        wakeLock = null
+                    }
                 }
         }
     }
@@ -476,6 +503,8 @@ class WalkieTalkieService : Service() {
         hubMgr?.disconnect()
         clientMgr?.disconnect()
         audioEngine.release()
+        wakeLock?.release()
+        wakeLock = null
         scope.cancel()
         super.onDestroy()
     }
