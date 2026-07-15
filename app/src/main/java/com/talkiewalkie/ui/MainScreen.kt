@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.talkiewalkie.model.ConnectionState
 import com.talkiewalkie.model.Role
 import com.talkiewalkie.model.WalkieState
 
@@ -143,8 +144,11 @@ private fun ChannelHeader(state: WalkieState) {
 
 @Composable
 private fun ConnectionStatusCard(state: WalkieState) {
-    val icon = if (state.connection.isActive) Icons.Default.BluetoothConnected
-               else Icons.Default.Bluetooth
+    val icon = when {
+        state.connection.isActive                        -> Icons.Default.BluetoothConnected
+        state.connection is ConnectionState.Reconnecting -> Icons.Default.Sync
+        else                                             -> Icons.Default.Bluetooth
+    }
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier              = Modifier.padding(16.dp),

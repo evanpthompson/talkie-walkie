@@ -3,16 +3,18 @@ package com.talkiewalkie.model
 enum class Role { NONE, HUB, CLIENT }
 
 sealed class ConnectionState {
-    data object Disconnected                      : ConnectionState()
-    data object Hosting                           : ConnectionState()
-    data object Searching                         : ConnectionState()
-    data class  Connected(val deviceName: String) : ConnectionState()
+    data object Disconnected                        : ConnectionState()
+    data object Hosting                             : ConnectionState()
+    data object Searching                           : ConnectionState()
+    data class  Connected(val deviceName: String)   : ConnectionState()
+    data class  Reconnecting(val attempt: Int)       : ConnectionState()
 
     val label: String get() = when (this) {
-        is Disconnected -> "Not connected"
-        is Hosting      -> "Hosting channel…"
-        is Searching    -> "Searching for hub…"
-        is Connected    -> "Connected — $deviceName"
+        is Disconnected  -> "Not connected"
+        is Hosting       -> "Hosting channel…"
+        is Searching     -> "Searching for hub…"
+        is Connected     -> "Connected — $deviceName"
+        is Reconnecting  -> "Reconnecting… (attempt $attempt)"
     }
 
     val isActive: Boolean get() = this is Hosting || this is Connected

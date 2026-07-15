@@ -48,6 +48,7 @@ class WalkieTalkieService : Service() {
 
     private var captureObserverJob:  Job? = null
     private var wakeWordObserverJob: Job? = null
+    private var clientChannelJob:    Job? = null
 
     private val _state = MutableStateFlow(WalkieState())
     val state: StateFlow<WalkieState> = _state.asStateFlow()
@@ -108,12 +109,8 @@ class WalkieTalkieService : Service() {
         updateNotification()
     }
 
-    @SuppressLint("MissingPermission")
     fun joinChannel(name: String) {
-        val localName = localDeviceName()
-        val uuid      = ChannelManager.channelUuid(name)
-        val devices   = adapter().bondedDevices?.toList() ?: emptyList()
-        clientMgr     = ClientConnectionManager(uuid, scope)
+        clientChannelJob?.cancel()
         _state.update {
             it.copy(
                 channelName = name,
@@ -121,26 +118,94 @@ class WalkieTalkieService : Service() {
                 connection  = ConnectionState.Searching,
             )
         }
-        scope.launch {
-            val hubName = clientMgr!!.connect(localName, devices)
-            if (hubName != null) {
+        clientChannelJob = scope.launch { manageClientChannel(name) }
+        updateNotification()
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun manageClientChannel(channelName: String) {
+        val maxAttempts  = 10
+        var attempt      = 0
+        var inboundJob: Job? = null
+        try {
+            while (attempt < maxAttempts) {
+                if (attempt > 0) {
+                    val delayMs = minOf(2_000L shl (attempt - 1), 30_000L)
+                    _state.update { it.copy(connection = ConnectionState.Reconnecting(attempt)) }
+                    updateNotification()
+                    delay(delayMs)
+                    if (_state.value.channelName != channelName) return
+                }
+
+                clientMgr?.disconnect()
+                val mgr = ClientConnectionManager(
+                    ChannelManager.channelUuid(channelName), scope
+                )
+                clientMgr = mgr
+
+                val devices = adapter().bondedDevices?.toList() ?: emptyList()
+                val hubName = mgr.connect(localDeviceName(), devices)
+
+                if (hubName == null) {
+                    attempt++
+                    continue
+                }
+
+                // Successful connection.
+                attempt = 0
                 _state.update { it.copy(connection = ConnectionState.Connected(hubName)) }
                 audioEngine.startPlayback()
                 audioEngine.startCapture()
                 ensureCaptureObserver()
-                observeClientInbound()
-                observeClientConnection()
-            } else {
-                _state.update {
-                    it.copy(
-                        channelName = null,
-                        role        = Role.NONE,
-                        connection  = ConnectionState.Disconnected,
-                    )
+                updateNotification()
+
+                inboundJob?.cancel()
+                inboundJob = scope.launch {
+                    mgr.inbound.collect { frame ->
+                        when (frame) {
+                            is Frame.Audio   -> audioEngine.playFrame(frame.pcm)
+                            is Frame.Roster  -> _state.update { it.copy(members = frame.members) }
+                            is Frame.Blocked -> _state.update {
+                                it.copy(isBlocked = true, isTransmitting = false)
+                            }
+                            else             -> {}
+                        }
+                    }
                 }
+
+                // Suspend until BT drops.
+                mgr.connected.first { !it }
+
+                inboundJob.cancel()
+                inboundJob = null
+
+                if (_state.value.channelName != channelName) return
+
+                attempt = 1
+                _state.update { it.copy(
+                    connection     = ConnectionState.Reconnecting(attempt),
+                    members        = emptyList(),
+                    isTransmitting = false,
+                    isBlocked      = false,
+                )}
+                updateNotification()
             }
-            updateNotification()
+        } finally {
+            inboundJob?.cancel()
         }
+
+        // All reconnect attempts exhausted — give up.
+        _state.update {
+            it.copy(
+                channelName    = null,
+                role           = Role.NONE,
+                connection     = ConnectionState.Disconnected,
+                members        = emptyList(),
+                isTransmitting = false,
+                isBlocked      = false,
+            )
+        }
+        updateNotification()
     }
 
     // ── PTT ───────────────────────────────────────────────────────────────────
@@ -253,41 +318,6 @@ class WalkieTalkieService : Service() {
         }
     }
 
-    // ── client inbound observer ───────────────────────────────────────────────
-
-    private fun observeClientInbound() {
-        scope.launch {
-            clientMgr?.inbound?.collect { frame ->
-                when (frame) {
-                    is Frame.Audio   -> audioEngine.playFrame(frame.pcm)
-                    is Frame.Roster  -> _state.update { it.copy(members = frame.members) }
-                    is Frame.Blocked -> _state.update {
-                        it.copy(isBlocked = true, isTransmitting = false)
-                    }
-                    else             -> {}
-                }
-            }
-        }
-    }
-
-    private fun observeClientConnection() {
-        scope.launch {
-            clientMgr?.connected?.collect { isConnected ->
-                if (!isConnected && _state.value.role == Role.CLIENT) {
-                    _state.update {
-                        it.copy(
-                            connection     = ConnectionState.Disconnected,
-                            members        = emptyList(),
-                            isTransmitting = false,
-                            isBlocked      = false,
-                        )
-                    }
-                    updateNotification()
-                }
-            }
-        }
-    }
-
     // ── wake-word → STT → Gemini pipeline ────────────────────────────────────
 
     private suspend fun observeWakeWordLoop() {
@@ -340,10 +370,12 @@ class WalkieTalkieService : Service() {
     }
 
     private fun leaveChannel() {
+        clientChannelJob?.cancel()
+        clientChannelJob = null
         hubMgr?.disconnect()
         clientMgr?.disconnect()
-        val preserved = _state.value.let { it.copy(ridingMode = it.ridingMode, speakerOn = it.speakerOn) }
-        _state.value = WalkieState(ridingMode = preserved.ridingMode, speakerOn = preserved.speakerOn)
+        val s = _state.value
+        _state.value = WalkieState(ridingMode = s.ridingMode, speakerOn = s.speakerOn)
         updateNotification()
     }
 

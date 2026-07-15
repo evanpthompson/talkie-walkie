@@ -7,10 +7,11 @@ class WalkieStateTest {
 
     // ── ConnectionState.isActive ──────────────────────────────────────────────
 
-    @Test fun disconnectedIsNotActive() = assertFalse(ConnectionState.Disconnected.isActive)
-    @Test fun searchingIsNotActive()    = assertFalse(ConnectionState.Searching.isActive)
-    @Test fun hostingIsActive()         = assertTrue(ConnectionState.Hosting.isActive)
-    @Test fun connectedIsActive()       = assertTrue(ConnectionState.Connected("Hub").isActive)
+    @Test fun disconnectedIsNotActive()  = assertFalse(ConnectionState.Disconnected.isActive)
+    @Test fun searchingIsNotActive()     = assertFalse(ConnectionState.Searching.isActive)
+    @Test fun reconnectingIsNotActive()  = assertFalse(ConnectionState.Reconnecting(1).isActive)
+    @Test fun hostingIsActive()          = assertTrue(ConnectionState.Hosting.isActive)
+    @Test fun connectedIsActive()        = assertTrue(ConnectionState.Connected("Hub").isActive)
 
     // ── ConnectionState.label ────────────────────────────────────────────────
 
@@ -21,6 +22,11 @@ class WalkieStateTest {
     @Test fun connectedLabelContainsDeviceName() {
         val label = ConnectionState.Connected("Alice's Phone").label
         assertTrue(label.contains("Alice's Phone"))
+    }
+
+    @Test fun reconnectingLabelContainsAttemptNumber() {
+        val label = ConnectionState.Reconnecting(3).label
+        assertTrue(label.contains("3"))
     }
 
     // ── WalkieState defaults ─────────────────────────────────────────────────
