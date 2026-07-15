@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.app.*
 import android.bluetooth.BluetoothManager
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Binder
 import android.os.IBinder
@@ -72,6 +74,7 @@ class WalkieTalkieService : Service() {
     private var rxLevelDecayJob:     Job? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
 
     private var lastRxMs = 0L
 
@@ -98,6 +101,7 @@ class WalkieTalkieService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification("Ready"))
         observeAudioMode()
         observeWakeLock()
+        observeAudioFocus()
     }
 
     private fun observeAudioMode() {
@@ -131,6 +135,44 @@ class WalkieTalkieService : Service() {
                     } else {
                         wakeLock?.release()
                         wakeLock = null
+                    }
+                }
+        }
+    }
+
+    // Request AUDIOFOCUS_GAIN while in a channel so music/podcasts duck or
+    // pause. On any focus loss (phone call, navigation prompt, other app) stop
+    // an active transmission immediately; PTT is manual so no auto-resume is
+    // needed when focus is regained.
+    private fun observeAudioFocus() {
+        val am = getSystemService(AudioManager::class.java)
+        val voiceAttrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+        val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+            when (change) {
+                AudioManager.AUDIOFOCUS_LOSS,
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+                AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK ->
+                    if (_state.value.isTransmitting) stopPtt()
+            }
+        }
+        scope.launch {
+            state
+                .map { it.role != Role.NONE }
+                .distinctUntilChanged()
+                .collect { inChannel ->
+                    if (inChannel) {
+                        audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                            .setAudioAttributes(voiceAttrs)
+                            .setAcceptsDelayedFocusGain(false)
+                            .setOnAudioFocusChangeListener(focusListener)
+                            .build()
+                            .also { am.requestAudioFocus(it) }
+                    } else {
+                        audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+                        audioFocusRequest = null
                     }
                 }
         }
@@ -505,6 +547,8 @@ class WalkieTalkieService : Service() {
         audioEngine.release()
         wakeLock?.release()
         wakeLock = null
+        audioFocusRequest?.let { getSystemService(AudioManager::class.java).abandonAudioFocusRequest(it) }
+        audioFocusRequest = null
         scope.cancel()
         super.onDestroy()
     }
