@@ -1,0 +1,2 @@
+-keep class ai.picovoice.** { *; }
+-keepclassmembers class ai.picovoice.** { *; }

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Talkie Walkie</string>
+    <string name="notification_channel_name">Walkie Talkie</string>
+    <string name="notification_title">Talkie Walkie</string>
+    <string name="status_ready">Ready — not connected</string>
+    <string name="status_listening">Listening for peers…</string>
+    <string name="status_connected">Connected to %1$s</string>
+    <string name="ptt_button_label">PUSH TO TALK</string>
+    <string name="ptt_button_transmitting">TRANSMITTING</string>
+</resources>
