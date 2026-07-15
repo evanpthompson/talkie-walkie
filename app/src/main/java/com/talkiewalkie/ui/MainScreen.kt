@@ -1,8 +1,11 @@
 package com.talkiewalkie.ui
 
 import android.bluetooth.BluetoothDevice
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -13,6 +16,7 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothConnected
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -39,17 +43,27 @@ fun MainScreen(
             .fillMaxSize()
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement  = Arrangement.spacedBy(24.dp),
+        verticalArrangement  = Arrangement.spacedBy(16.dp),
     ) {
         ConnectionStatusCard(state.connection)
+
+        // Replaces normal content while Gemini is processing a voice command.
+        AnimatedVisibility(
+            visible = state.listeningForCommand,
+            enter   = fadeIn(),
+            exit    = fadeOut(),
+        ) {
+            CommandListeningBanner()
+        }
 
         Spacer(Modifier.weight(1f))
 
         PttButton(
-            isTransmitting = state.isTransmitting,
-            enabled        = state.connection.isConnected,
-            onDown         = onPttDown,
-            onUp           = onPttUp,
+            isTransmitting        = state.isTransmitting,
+            isListeningForCommand = state.listeningForCommand,
+            enabled               = state.connection.isConnected && !state.listeningForCommand,
+            onDown                = onPttDown,
+            onUp                  = onPttUp,
         )
 
         WakeWordRow(
@@ -57,6 +71,15 @@ fun MainScreen(
             connected = state.connection.isConnected,
             onToggle  = onWakeWordToggle,
         )
+
+        // Show last Gemini-interpreted command text as subtle feedback.
+        state.lastCommandText?.let { text ->
+            Text(
+                text  = "Heard: \"$text\"",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
 
         Spacer(Modifier.weight(1f))
 
@@ -86,27 +109,88 @@ private fun ConnectionStatusCard(connection: ConnectionState) {
 }
 
 @Composable
+private fun CommandListeningBanner() {
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue   = 0.4f,
+        targetValue    = 1f,
+        animationSpec  = infiniteRepeatable(
+            animation  = tween(600),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "pulse-alpha",
+    )
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors   = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer
+        ),
+    ) {
+        Row(
+            modifier              = Modifier.padding(16.dp),
+            verticalAlignment     = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(
+                Icons.Default.RecordVoiceOver,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = alpha),
+            )
+            Column {
+                Text(
+                    "Listening for command…",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Text(
+                    "Say: \"connect to John\" · \"start transmitting\" · \"disconnect\"",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun PttButton(
     isTransmitting: Boolean,
+    isListeningForCommand: Boolean,
     enabled: Boolean,
     onDown: () -> Unit,
     onUp: () -> Unit,
 ) {
-    val targetColor = if (isTransmitting) MaterialTheme.colorScheme.error
-                      else MaterialTheme.colorScheme.primary
+    val targetColor = when {
+        isListeningForCommand -> MaterialTheme.colorScheme.secondary
+        isTransmitting        -> MaterialTheme.colorScheme.error
+        else                  -> MaterialTheme.colorScheme.primary
+    }
     val color by animateColorAsState(targetColor, label = "ptt-color")
 
     val scale by animateFloatAsState(
-        targetValue = if (isTransmitting) 1.12f else 1f,
+        targetValue   = if (isTransmitting || isListeningForCommand) 1.12f else 1f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "ptt-scale",
+        label         = "ptt-scale",
     )
 
-    val label = if (isTransmitting) "TRANSMITTING" else if (enabled) "PUSH TO TALK" else "NOT CONNECTED"
+    val label = when {
+        isListeningForCommand -> "LISTENING…"
+        isTransmitting        -> "TRANSMITTING"
+        enabled               -> "PUSH TO TALK"
+        else                  -> "NOT CONNECTED"
+    }
+
+    val icon = when {
+        isListeningForCommand -> Icons.Default.RecordVoiceOver
+        isTransmitting        -> Icons.Default.Mic
+        else                  -> Icons.Default.MicOff
+    }
 
     Surface(
         shape = CircleShape,
-        color = if (enabled) color else MaterialTheme.colorScheme.surfaceVariant,
+        color = if (enabled || isListeningForCommand) color
+                else MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier
             .size(180.dp)
             .scale(scale)
@@ -122,10 +206,10 @@ private fun PttButton(
         Box(contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
-                    if (isTransmitting) Icons.Default.Mic else Icons.Default.MicOff,
+                    icon,
                     contentDescription = null,
                     modifier = Modifier.size(40.dp),
-                    tint = MaterialTheme.colorScheme.onPrimary,
+                    tint     = MaterialTheme.colorScheme.onPrimary,
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
@@ -152,11 +236,13 @@ private fun WakeWordRow(
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Column {
-            Text("Wake word", style = MaterialTheme.typography.bodyLarge)
+            Text("Voice commands", style = MaterialTheme.typography.bodyLarge)
             Text(
-                if (enabled && connected) "Say \"Porcupine\" to transmit"
-                else if (!connected) "Connect first"
-                else "Disabled",
+                when {
+                    !connected          -> "Connect first"
+                    enabled             -> "Say \"Porcupine\", then your command"
+                    else                -> "Disabled — use PTT button"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

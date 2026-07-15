@@ -11,8 +11,11 @@ import com.talkiewalkie.MainActivity
 import com.talkiewalkie.R
 import com.talkiewalkie.audio.AudioEngine
 import com.talkiewalkie.bluetooth.BluetoothConnectionManager
-import com.talkiewalkie.model.ConnectionState
 import com.talkiewalkie.model.WalkieState
+import com.talkiewalkie.voice.SpeechRecognitionException
+import com.talkiewalkie.voice.SpeechToTextEngine
+import com.talkiewalkie.voice.VoiceCommand
+import com.talkiewalkie.voice.VoiceCommandProcessor
 import com.talkiewalkie.wakeword.WakeWordDetector
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -27,6 +30,8 @@ class WalkieTalkieService : Service() {
     private lateinit var audioEngine: AudioEngine
     private lateinit var btManager: BluetoothConnectionManager
     private lateinit var wakeWord: WakeWordDetector
+    private lateinit var stt: SpeechToTextEngine
+    private lateinit var commandProcessor: VoiceCommandProcessor
 
     private val _state = MutableStateFlow(WalkieState())
     val state: StateFlow<WalkieState> = _state.asStateFlow()
@@ -39,9 +44,11 @@ class WalkieTalkieService : Service() {
     override fun onCreate() {
         super.onCreate()
         val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
-        audioEngine = AudioEngine(scope)
-        btManager   = BluetoothConnectionManager(adapter, scope)
-        wakeWord    = WakeWordDetector(this)
+        audioEngine      = AudioEngine(scope)
+        btManager        = BluetoothConnectionManager(adapter, scope)
+        wakeWord         = WakeWordDetector(this)
+        stt              = SpeechToTextEngine(this)
+        commandProcessor = VoiceCommandProcessor(BuildConfig.GEMINI_API_KEY)
 
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Ready"))
@@ -61,8 +68,7 @@ class WalkieTalkieService : Service() {
 
     fun connectTo(deviceAddress: String) {
         val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
-        val device  = adapter.getRemoteDevice(deviceAddress)
-        btManager.connectTo(device)
+        btManager.connectTo(adapter.getRemoteDevice(deviceAddress))
     }
 
     fun startPtt() {
@@ -79,26 +85,80 @@ class WalkieTalkieService : Service() {
         _state.update { it.copy(wakeWordEnabled = enabled) }
     }
 
-    // Routes captured audio frames: wake-word detection OR BT transmit, never both.
+    // Routes captured frames: transmit over BT, feed Porcupine, or drop (during STT).
     private fun observeCapture() {
         scope.launch {
             audioEngine.capturedAudio.collect { pcm ->
-                if (_state.value.isTransmitting) {
-                    btManager.send(pcm)
-                } else if (_state.value.wakeWordEnabled) {
-                    wakeWord.feedAudio(pcm)
+                val s = _state.value
+                when {
+                    s.isTransmitting       -> btManager.send(pcm)
+                    s.wakeWordEnabled
+                    && !s.listeningForCommand -> wakeWord.feedAudio(pcm)
                 }
             }
         }
     }
 
+    // Wake word → stop AudioRecord (free mic for STT) → STT → Gemini → execute command.
     private fun observeWakeWord() {
         scope.launch {
             wakeWord.detections.collect {
+                _state.update { it.copy(listeningForCommand = true, lastCommandText = null) }
+                updateNotification()
+
+                // Release mic so SpeechRecognizer gets exclusive access.
+                audioEngine.stopCapture()
+
+                val text = try {
+                    stt.listen()
+                } catch (e: SpeechRecognitionException) {
+                    // STT unavailable or no speech detected — fall back to a timed PTT burst.
+                    audioEngine.startCapture()
+                    _state.update { it.copy(listeningForCommand = false) }
+                    startPtt()
+                    delay(3_000)
+                    stopPtt()
+                    return@collect
+                } finally {
+                    // Always restart capture, even on error paths above.
+                    if (!audioEngine.isCapturing) audioEngine.startCapture()
+                    _state.update { it.copy(listeningForCommand = false) }
+                    updateNotification()
+                }
+
+                if (text.isNotBlank()) {
+                    _state.update { it.copy(lastCommandText = text) }
+                    val command = commandProcessor.process(text)
+                    executeCommand(command)
+                }
+            }
+        }
+    }
+
+    private suspend fun executeCommand(command: VoiceCommand) {
+        when (command) {
+            is VoiceCommand.ConnectToDevice  -> connectToByName(command.deviceName)
+            is VoiceCommand.StartTransmitting -> {
                 startPtt()
                 delay(3_000)
                 stopPtt()
             }
+            is VoiceCommand.StopTransmitting -> stopPtt()
+            is VoiceCommand.Disconnect       -> btManager.disconnect()
+            is VoiceCommand.SetWakeWord      -> setWakeWordEnabled(command.enabled)
+            is VoiceCommand.Unknown          -> { /* no action */ }
+        }
+    }
+
+    @Suppress("MissingPermission")
+    private fun connectToByName(name: String) {
+        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
+        val device  = adapter.bondedDevices
+            ?.firstOrNull { it.name?.contains(name, ignoreCase = true) == true }
+        if (device != null) {
+            btManager.connectTo(device)
+        } else {
+            _state.update { it.copy(lastCommandText = "Device \"$name\" not found in paired devices") }
         }
     }
 
@@ -156,7 +216,12 @@ class WalkieTalkieService : Service() {
     }
 
     private fun updateNotification() {
-        val status = _state.value.connection.label
+        val s = _state.value
+        val status = when {
+            s.listeningForCommand -> "Listening for command…"
+            s.isTransmitting      -> "Transmitting"
+            else                  -> s.connection.label
+        }
         getSystemService(NotificationManager::class.java)
             .notify(NOTIFICATION_ID, buildNotification(status))
     }

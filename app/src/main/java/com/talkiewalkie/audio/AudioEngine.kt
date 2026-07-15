@@ -22,6 +22,8 @@ class AudioEngine(private val scope: CoroutineScope) {
     private var player: AudioTrack? = null
     private var captureJob: Job? = null
 
+    val isCapturing: Boolean get() = captureJob?.isActive == true
+
     private val _capturedAudio = MutableSharedFlow<ByteArray>(extraBufferCapacity = 128)
     val capturedAudio: SharedFlow<ByteArray> = _capturedAudio.asSharedFlow()
 

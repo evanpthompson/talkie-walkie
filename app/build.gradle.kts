@@ -16,6 +16,8 @@ android {
 
         // Get your free key at console.picovoice.ai
         buildConfigField("String", "PORCUPINE_ACCESS_KEY", "\"YOUR_KEY_HERE\"")
+        // Get your free key at aistudio.google.com
+        buildConfigField("String", "GEMINI_API_KEY", "\"YOUR_KEY_HERE\"")
     }
 
     buildFeatures {
@@ -64,4 +66,7 @@ dependencies {
 
     // On-device wake word detection — no internet required
     implementation("ai.picovoice:porcupine-android:3.0.1")
+
+    // Gemini function calling for natural language voice commands
+    implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
 }

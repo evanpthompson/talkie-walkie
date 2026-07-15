@@ -21,4 +21,6 @@ data class WalkieState(
     val isTransmitting: Boolean = false,
     val isReceiving: Boolean = false,
     val wakeWordEnabled: Boolean = true,
+    val listeningForCommand: Boolean = false,
+    val lastCommandText: String? = null,
 )
