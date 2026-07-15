@@ -45,6 +45,12 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
+    }
 }
 
 dependencies {
@@ -78,6 +84,7 @@ dependencies {
     // ── unit tests ────────────────────────────────────────────────────────────
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
+    testImplementation("org.robolectric:robolectric:4.12.2")
 
     // ── instrumented / Compose UI tests ───────────────────────────────────────
     androidTestImplementation(composeBom)
