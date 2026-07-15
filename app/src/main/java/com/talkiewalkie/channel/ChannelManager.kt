@@ -4,6 +4,9 @@ import android.bluetooth.BluetoothAdapter
 import java.util.UUID
 
 object ChannelManager {
+    val DISCOVERY_UUID: UUID =
+        UUID.nameUUIDFromBytes("tw.discovery".toByteArray(Charsets.UTF_8))
+
     fun channelUuid(name: String): UUID =
         UUID.nameUUIDFromBytes("tw.channel.$name".toByteArray(Charsets.UTF_8))
 

@@ -18,8 +18,11 @@ import com.talkiewalkie.audio.AudioEngine
 import com.talkiewalkie.audio.OpusCodec
 import com.talkiewalkie.audio.SquelchGate
 import com.talkiewalkie.audio.rms
+import com.talkiewalkie.channel.ChannelDiscovery
 import com.talkiewalkie.channel.ChannelManager
+import com.talkiewalkie.channel.ChannelScanner
 import com.talkiewalkie.channel.ClientConnectionManager
+import com.talkiewalkie.channel.FoundChannel
 import com.talkiewalkie.channel.HubConnectionManager
 import com.talkiewalkie.channel.HubEvent
 import com.talkiewalkie.haptic.HapticEngine
@@ -58,8 +61,13 @@ class WalkieTalkieService : Service() {
     private val opusCodec   = OpusCodec()
     private val squelchGate = SquelchGate()
 
-    private var hubMgr:    HubConnectionManager?    = null
-    private var clientMgr: ClientConnectionManager? = null
+    private var hubMgr:          HubConnectionManager?    = null
+    private var clientMgr:       ClientConnectionManager? = null
+    private var channelDiscovery: ChannelDiscovery?       = null
+    private val channelScanner = ChannelScanner(scope)
+
+    val scanResults: StateFlow<List<FoundChannel>> = channelScanner.results
+    val isScanning:  StateFlow<Boolean>            = channelScanner.scanning
 
     // Riding-mode components — created on first use to avoid loading Porcupine
     // and STT when the user never enables riding mode.
@@ -181,6 +189,9 @@ class WalkieTalkieService : Service() {
     // ── channel lifecycle ─────────────────────────────────────────────────────
 
     @SuppressLint("MissingPermission")
+    fun scanForChannels() = channelScanner.scan(adapter())
+
+    @SuppressLint("MissingPermission")
     fun createChannel(name: String) {
         val localName = localDeviceName()
         val uuid      = ChannelManager.channelUuid(name)
@@ -194,6 +205,8 @@ class WalkieTalkieService : Service() {
             )
         }
         ChannelPrefs.save(this, name, Role.HUB)
+        if (channelDiscovery == null) channelDiscovery = ChannelDiscovery(adapter(), scope)
+        channelDiscovery!!.start(name)
         hubMgr!!.start()
         audioEngine.startPlayback()
         audioEngine.startCapture()
@@ -521,6 +534,7 @@ class WalkieTalkieService : Service() {
         clientChannelJob = null
         hubMgr?.disconnect()
         clientMgr?.disconnect()
+        channelDiscovery?.stop()
         ChannelPrefs.clear(this)
         val s = _state.value
         _state.value = WalkieState(ridingMode = s.ridingMode, speakerOn = s.speakerOn)
@@ -544,6 +558,7 @@ class WalkieTalkieService : Service() {
         wakeWordObserverJob?.cancel()
         hubMgr?.disconnect()
         clientMgr?.disconnect()
+        channelDiscovery?.stop()
         audioEngine.release()
         wakeLock?.release()
         wakeLock = null

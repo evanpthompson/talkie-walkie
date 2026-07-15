@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.talkiewalkie.channel.FoundChannel
 import com.talkiewalkie.model.WalkieState
 import com.talkiewalkie.service.WalkieTalkieService
 import com.talkiewalkie.ui.ChannelScreen
@@ -49,6 +50,11 @@ class MainActivity : ComponentActivity() {
                 val service = walkieService
                 val state by (service?.state ?: MutableStateFlow(WalkieState()))
                     .collectAsStateWithLifecycle()
+                val scanResults by (service?.scanResults
+                        ?: MutableStateFlow<List<FoundChannel>>(emptyList()))
+                    .collectAsStateWithLifecycle()
+                val isScanning by (service?.isScanning ?: MutableStateFlow(false))
+                    .collectAsStateWithLifecycle()
 
                 LaunchedEffect(state.ridingMode) {
                     if (state.ridingMode) {
@@ -78,6 +84,9 @@ class MainActivity : ComponentActivity() {
                     ChannelScreen(
                         onCreateChannel = { name -> service?.createChannel(name) },
                         onJoinChannel   = { name -> service?.joinChannel(name) },
+                        scanResults     = scanResults,
+                        isScanning      = isScanning,
+                        onScan          = { service?.scanForChannels() },
                     )
                 } else {
                     MainScreen(
