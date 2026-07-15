@@ -32,8 +32,11 @@ import com.talkiewalkie.wakeword.WakeWordDetector
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
-private const val CHANNEL_ID      = "walkie_talkie"
-private const val NOTIFICATION_ID = 1
+private const val CHANNEL_ID       = "walkie_talkie"
+private const val NOTIFICATION_ID  = 1
+
+private const val TX_TIMEOUT_SECS  = 30
+private const val TX_WARNING_SECS  = 5
 
 class WalkieTalkieService : Service() {
 
@@ -63,6 +66,7 @@ class WalkieTalkieService : Service() {
     private var captureObserverJob:  Job? = null
     private var wakeWordObserverJob: Job? = null
     private var clientChannelJob:    Job? = null
+    private var txTimeoutJob:        Job? = null
 
     private var lastRxMs = 0L
 
@@ -237,26 +241,38 @@ class WalkieTalkieService : Service() {
 
     fun startPtt() {
         val s = _state.value
-        when (s.role) {
-            Role.HUB -> {
-                if (hubMgr?.acquireTransmitter(localDeviceName()) == true) {
-                    _state.update { it.copy(isTransmitting = true) }
-                    hapticEngine.pttOpen()
-                }
-            }
-            Role.CLIENT -> {
-                if (!s.isBlocked) {
-                    clientMgr?.sendBusy()
-                    _state.update { it.copy(isTransmitting = true) }
-                    hapticEngine.pttOpen()
-                }
-            }
-            Role.NONE -> {}
+        val acquired = when (s.role) {
+            Role.HUB -> hubMgr?.acquireTransmitter(localDeviceName()) == true
+            Role.CLIENT -> !s.isBlocked
+            Role.NONE -> false
         }
+        if (!acquired) { updateNotification(); return }
+
+        if (s.role == Role.CLIENT) clientMgr?.sendBusy()
+        _state.update { it.copy(isTransmitting = true) }
+        hapticEngine.pttOpen()
         updateNotification()
+
+        txTimeoutJob?.cancel()
+        txTimeoutJob = scope.launch {
+            delay((TX_TIMEOUT_SECS - TX_WARNING_SECS) * 1_000L)
+            var remaining = TX_WARNING_SECS
+            while (remaining > 0 && _state.value.isTransmitting) {
+                _state.update { it.copy(txSecondsLeft = remaining) }
+                updateNotification()
+                hapticEngine.txWarning()
+                delay(1_000)
+                remaining--
+            }
+            if (_state.value.isTransmitting) stopPtt()
+        }
     }
 
     fun stopPtt() {
+        val job = txTimeoutJob
+        txTimeoutJob = null
+        job?.cancel()
+
         val s = _state.value
         if (s.isTransmitting) hapticEngine.pttClose()
         when (s.role) {
@@ -264,7 +280,7 @@ class WalkieTalkieService : Service() {
             Role.CLIENT -> if (s.isTransmitting) clientMgr?.sendFree()
             Role.NONE   -> {}
         }
-        _state.update { it.copy(isTransmitting = false, isBlocked = false) }
+        _state.update { it.copy(isTransmitting = false, isBlocked = false, txSecondsLeft = null) }
         opusCodec.resetEncoder()
         squelchGate.reset()
         updateNotification()
@@ -492,6 +508,7 @@ class WalkieTalkieService : Service() {
         val status = when {
             s.listeningForCommand        -> "Listening for command…"
             s.ridingMode && !s.connection.isActive -> "Riding mode — say \"Porcupine\""
+            s.isTransmitting && s.txSecondsLeft != null -> "Transmitting — ${s.txSecondsLeft}s left"
             s.isTransmitting             -> "Transmitting"
             s.currentTransmitter != null -> "Receiving from ${s.currentTransmitter}"
             s.connection.isActive        -> s.channelName?.let { "Channel: $it" } ?: s.connection.label

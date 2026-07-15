@@ -15,10 +15,11 @@ class HapticEngine(context: Context) {
         context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
     }
 
-    fun pttOpen()  = vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
-    fun pttClose() = vibrate(VibrationEffect.createOneShot(30, VibrationEffect.DEFAULT_AMPLITUDE))
-    fun blocked()  = vibrate(VibrationEffect.createWaveform(longArrayOf(0, 40, 60, 40), -1))
-    fun rxStart()  = vibrate(VibrationEffect.createWaveform(longArrayOf(0, 25, 35, 25), -1))
+    fun pttOpen()   = vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+    fun pttClose()  = vibrate(VibrationEffect.createOneShot(30, VibrationEffect.DEFAULT_AMPLITUDE))
+    fun blocked()   = vibrate(VibrationEffect.createWaveform(longArrayOf(0, 40, 60, 40), -1))
+    fun rxStart()   = vibrate(VibrationEffect.createWaveform(longArrayOf(0, 25, 35, 25), -1))
+    fun txWarning() = vibrate(VibrationEffect.createWaveform(longArrayOf(0, 60, 80, 60), -1))
 
     private fun vibrate(effect: VibrationEffect) {
         if (vibrator.hasVibrator()) vibrator.vibrate(effect)

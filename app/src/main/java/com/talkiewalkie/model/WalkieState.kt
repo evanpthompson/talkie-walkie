@@ -36,4 +36,7 @@ data class WalkieState(
     val speakerOn: Boolean           = false,
     val listeningForCommand: Boolean = false,
     val lastCommandText: String?     = null,
+    // Non-null during the final TX_WARNING_SECS of a transmission; counts down
+    // to 0, at which point the service auto-releases PTT.
+    val txSecondsLeft: Int?          = null,
 )

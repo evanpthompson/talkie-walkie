@@ -77,6 +77,7 @@ fun MainScreen(
             PttButton(
                 isTransmitting = state.isTransmitting,
                 isBlocked      = state.isBlocked,
+                txSecondsLeft  = state.txSecondsLeft,
                 // Keyed on connection only — not isBlocked — so that the
                 // finger-release event still fires after a BLOCKED frame
                 // arrives mid-press and lets stopPtt() clear the flag.
@@ -233,15 +234,17 @@ private fun CommandListeningIndicator() {
 private fun PttButton(
     isTransmitting: Boolean,
     isBlocked: Boolean,
+    txSecondsLeft: Int?,
     enabled: Boolean,
     onDown: () -> Unit,
     onUp: () -> Unit,
 ) {
     val targetColor = when {
-        isBlocked      -> MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
-        isTransmitting -> MaterialTheme.colorScheme.error
-        enabled        -> MaterialTheme.colorScheme.primary
-        else           -> MaterialTheme.colorScheme.surfaceVariant
+        isBlocked                          -> MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
+        isTransmitting && txSecondsLeft != null -> MaterialTheme.colorScheme.tertiary
+        isTransmitting                     -> MaterialTheme.colorScheme.error
+        enabled                            -> MaterialTheme.colorScheme.primary
+        else                               -> MaterialTheme.colorScheme.surfaceVariant
     }
     val color by animateColorAsState(targetColor, label = "ptt-color")
     val scale by animateFloatAsState(
@@ -251,10 +254,11 @@ private fun PttButton(
     )
 
     val label = when {
-        isBlocked      -> "CHANNEL BUSY"
-        isTransmitting -> "TRANSMITTING"
-        enabled        -> "PUSH TO TALK"
-        else           -> "NOT CONNECTED"
+        isBlocked                          -> "CHANNEL BUSY"
+        isTransmitting && txSecondsLeft != null -> "${txSecondsLeft}s LEFT"
+        isTransmitting                     -> "TRANSMITTING"
+        enabled                            -> "PUSH TO TALK"
+        else                               -> "NOT CONNECTED"
     }
     val icon = if (isTransmitting) Icons.Default.Mic else Icons.Default.MicOff
 
