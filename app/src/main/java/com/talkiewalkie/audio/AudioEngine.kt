@@ -1,10 +1,14 @@
 package com.talkiewalkie.audio
 
+import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.os.Build
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
@@ -28,6 +32,7 @@ class AudioEngine(private val scope: CoroutineScope) {
     val capturedAudio: SharedFlow<ByteArray> = _capturedAudio.asSharedFlow()
 
     fun startCapture() {
+        if (isCapturing) return     // idempotent — caller need not check first
         val bufferSize = maxOf(
             AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING),
             FRAME_BYTES * 2
@@ -59,11 +64,18 @@ class AudioEngine(private val scope: CoroutineScope) {
             AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, ENCODING),
             FRAME_BYTES * 4
         )
-        player = AudioTrack(
-            AudioManager.STREAM_VOICE_CALL,
-            SAMPLE_RATE, CHANNEL_OUT, ENCODING,
-            bufferSize, AudioTrack.MODE_STREAM
-        ).also { it.play() }
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+        val format = AudioFormat.Builder()
+            .setSampleRate(SAMPLE_RATE)
+            .setChannelMask(CHANNEL_OUT)
+            .setEncoding(ENCODING)
+            .build()
+        player = AudioTrack(attrs, format, bufferSize, AudioTrack.MODE_STREAM,
+            AudioManager.AUDIO_SESSION_ID_GENERATE)
+            .also { it.play() }
     }
 
     fun playFrame(pcm: ByteArray) {
@@ -74,6 +86,29 @@ class AudioEngine(private val scope: CoroutineScope) {
         player?.stop()
         player?.release()
         player = null
+    }
+
+    /**
+     * Route playback audio to the built-in loudspeaker ([on] = true) or back to
+     * the earpiece / default communication device ([on] = false).
+     *
+     * Uses the API-31+ setCommunicationDevice() path first; falls back to the
+     * deprecated isSpeakerphoneOn setter on older devices.
+     */
+    fun setSpeakerOn(context: Context, on: Boolean) {
+        val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (on) {
+                val speaker = am.availableCommunicationDevices
+                    .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                if (speaker != null) am.setCommunicationDevice(speaker)
+            } else {
+                am.clearCommunicationDevice()
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            am.isSpeakerphoneOn = on
+        }
     }
 
     fun release() {

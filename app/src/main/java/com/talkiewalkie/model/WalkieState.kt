@@ -3,9 +3,9 @@ package com.talkiewalkie.model
 enum class Role { NONE, HUB, CLIENT }
 
 sealed class ConnectionState {
-    data object Disconnected                    : ConnectionState()
-    data object Hosting                         : ConnectionState()
-    data object Searching                       : ConnectionState()
+    data object Disconnected                      : ConnectionState()
+    data object Hosting                           : ConnectionState()
+    data object Searching                         : ConnectionState()
     data class  Connected(val deviceName: String) : ConnectionState()
 
     val label: String get() = when (this) {
@@ -27,5 +27,11 @@ data class WalkieState(
     val isReceiving: Boolean         = false,
     val currentTransmitter: String?  = null,
     val isBlocked: Boolean           = false,
+    // Riding mode: keeps microphone open and listens for the Porcupine wake
+    // word even when no PTT is active — designed for hands-free use while moving.
+    val ridingMode: Boolean          = false,
+    // Routes playback to the built-in loudspeaker instead of the earpiece.
+    val speakerOn: Boolean           = false,
+    val listeningForCommand: Boolean = false,
     val lastCommandText: String?     = null,
 )

@@ -15,8 +15,8 @@ class VoiceCommandProcessor(apiKey: String) {
 
     private val model = GenerativeModel(
         modelName = "gemini-1.5-flash",
-        apiKey = apiKey,
-        tools = listOf(walkieTalkieTools),
+        apiKey    = apiKey,
+        tools     = listOf(walkieTalkieTools),
         systemInstruction = content {
             text(
                 """
@@ -46,20 +46,24 @@ class VoiceCommandProcessor(apiKey: String) {
             val args = call.args ?: emptyMap()
 
             when (call.name) {
-                "connect_to_device" -> {
-                    val name = (args["device_name"] as? JsonPrimitive)?.content.orEmpty()
-                    VoiceCommand.ConnectToDevice(name)
+                "create_channel" -> {
+                    val name = (args["channel_name"] as? JsonPrimitive)?.content.orEmpty()
+                    VoiceCommand.CreateChannel(name)
+                }
+                "join_channel" -> {
+                    val name = (args["channel_name"] as? JsonPrimitive)?.content.orEmpty()
+                    VoiceCommand.JoinChannel(name)
                 }
                 "start_transmitting" -> VoiceCommand.StartTransmitting
                 "stop_transmitting"  -> VoiceCommand.StopTransmitting
                 "disconnect"         -> VoiceCommand.Disconnect
-                "set_wake_word" -> {
+                "set_riding_mode"    -> {
                     val enabled = (args["enabled"] as? JsonPrimitive)?.boolean ?: true
-                    VoiceCommand.SetWakeWord(enabled)
+                    VoiceCommand.SetRidingMode(enabled)
                 }
                 else -> VoiceCommand.Unknown(spokenText)
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             VoiceCommand.Unknown(spokenText)
         }
     }
@@ -68,43 +72,57 @@ class VoiceCommandProcessor(apiKey: String) {
 private val walkieTalkieTools = Tool(
     functionDeclarations = listOf(
         FunctionDeclaration(
-            name = "connect_to_device",
-            description = "Connect to a paired Bluetooth device by name",
-            parameters = Schema(
-                type = FunctionType.OBJECT,
+            name        = "create_channel",
+            description = "Create a new channel and become the hub for other devices",
+            parameters  = Schema(
+                type       = FunctionType.OBJECT,
                 properties = mapOf(
-                    "device_name" to Schema(
-                        type = FunctionType.STRING,
-                        description = "The name of the Bluetooth device to connect to"
+                    "channel_name" to Schema(
+                        type        = FunctionType.STRING,
+                        description = "Name of the channel to create"
                     )
                 ),
-                required = listOf("device_name")
+                required = listOf("channel_name")
             )
         ),
         FunctionDeclaration(
-            name = "start_transmitting",
-            description = "Start transmitting the user's voice to the connected device",
-            parameters = emptyObjectSchema()
+            name        = "join_channel",
+            description = "Join an existing channel hosted by another device",
+            parameters  = Schema(
+                type       = FunctionType.OBJECT,
+                properties = mapOf(
+                    "channel_name" to Schema(
+                        type        = FunctionType.STRING,
+                        description = "Name of the channel to join"
+                    )
+                ),
+                required = listOf("channel_name")
+            )
         ),
         FunctionDeclaration(
-            name = "stop_transmitting",
+            name        = "start_transmitting",
+            description = "Start transmitting the user's voice to the channel",
+            parameters  = emptyObjectSchema()
+        ),
+        FunctionDeclaration(
+            name        = "stop_transmitting",
             description = "Stop transmitting audio",
-            parameters = emptyObjectSchema()
+            parameters  = emptyObjectSchema()
         ),
         FunctionDeclaration(
-            name = "disconnect",
-            description = "Disconnect from the currently connected Bluetooth device",
-            parameters = emptyObjectSchema()
+            name        = "disconnect",
+            description = "Leave the current channel",
+            parameters  = emptyObjectSchema()
         ),
         FunctionDeclaration(
-            name = "set_wake_word",
-            description = "Enable or disable voice-triggered transmission via wake word",
-            parameters = Schema(
-                type = FunctionType.OBJECT,
+            name        = "set_riding_mode",
+            description = "Enable or disable riding mode (hands-free voice command activation)",
+            parameters  = Schema(
+                type       = FunctionType.OBJECT,
                 properties = mapOf(
                     "enabled" to Schema(
-                        type = FunctionType.BOOLEAN,
-                        description = "True to enable wake word detection, false to disable it"
+                        type        = FunctionType.BOOLEAN,
+                        description = "True to enable riding mode, false to disable it"
                     )
                 ),
                 required = listOf("enabled")
@@ -114,7 +132,7 @@ private val walkieTalkieTools = Tool(
 )
 
 private fun emptyObjectSchema() = Schema(
-    type = FunctionType.OBJECT,
+    type       = FunctionType.OBJECT,
     properties = emptyMap(),
-    required = emptyList()
+    required   = emptyList()
 )

@@ -7,6 +7,7 @@ import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import com.talkiewalkie.BuildConfig
 import com.talkiewalkie.MainActivity
 import com.talkiewalkie.R
 import com.talkiewalkie.audio.AudioEngine
@@ -18,6 +19,11 @@ import com.talkiewalkie.model.ConnectionState
 import com.talkiewalkie.model.Role
 import com.talkiewalkie.model.WalkieState
 import com.talkiewalkie.protocol.Frame
+import com.talkiewalkie.voice.SpeechRecognitionException
+import com.talkiewalkie.voice.SpeechToTextEngine
+import com.talkiewalkie.voice.VoiceCommand
+import com.talkiewalkie.voice.VoiceCommandProcessor
+import com.talkiewalkie.wakeword.WakeWordDetector
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
@@ -32,6 +38,15 @@ class WalkieTalkieService : Service() {
 
     private var hubMgr:    HubConnectionManager?    = null
     private var clientMgr: ClientConnectionManager? = null
+
+    // Riding-mode components — created on first use to avoid loading Porcupine
+    // and STT when the user never enables riding mode.
+    private var wakeWord:         WakeWordDetector?    = null
+    private var stt:              SpeechToTextEngine?  = null
+    private var commandProcessor: VoiceCommandProcessor? = null
+
+    private var captureObserverJob:  Job? = null
+    private var wakeWordObserverJob: Job? = null
 
     private val _state = MutableStateFlow(WalkieState())
     val state: StateFlow<WalkieState> = _state.asStateFlow()
@@ -55,6 +70,8 @@ class WalkieTalkieService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification("Ready"))
     }
 
+    // ── channel lifecycle ─────────────────────────────────────────────────────
+
     @SuppressLint("MissingPermission")
     fun createChannel(name: String) {
         val localName = localDeviceName()
@@ -71,7 +88,7 @@ class WalkieTalkieService : Service() {
         hubMgr!!.start()
         audioEngine.startPlayback()
         audioEngine.startCapture()
-        observeCapture()
+        ensureCaptureObserver()
         observeHubEvents()
         updateNotification()
     }
@@ -95,7 +112,7 @@ class WalkieTalkieService : Service() {
                 _state.update { it.copy(connection = ConnectionState.Connected(hubName)) }
                 audioEngine.startPlayback()
                 audioEngine.startCapture()
-                observeCapture()
+                ensureCaptureObserver()
                 observeClientInbound()
                 observeClientConnection()
             } else {
@@ -110,6 +127,8 @@ class WalkieTalkieService : Service() {
             updateNotification()
         }
     }
+
+    // ── PTT ───────────────────────────────────────────────────────────────────
 
     fun startPtt() {
         val s = _state.value
@@ -141,18 +160,64 @@ class WalkieTalkieService : Service() {
         updateNotification()
     }
 
-    private fun observeCapture() {
-        scope.launch {
+    // ── riding mode ───────────────────────────────────────────────────────────
+
+    fun setRidingMode(enabled: Boolean) {
+        _state.update { it.copy(ridingMode = enabled) }
+        if (enabled) {
+            // Lazy-create voice pipeline components on first use.
+            if (wakeWord == null) wakeWord = WakeWordDetector(this)
+            if (stt      == null) stt      = SpeechToTextEngine(this)
+            if (commandProcessor == null)
+                commandProcessor = VoiceCommandProcessor(BuildConfig.GEMINI_API_KEY)
+
+            // Capture must be running for Porcupine to receive audio.
+            audioEngine.startCapture()       // idempotent
+            ensureCaptureObserver()
+
+            wakeWord!!.start(BuildConfig.PORCUPINE_ACCESS_KEY)
+
+            if (wakeWordObserverJob?.isActive != true) {
+                wakeWordObserverJob = scope.launch { observeWakeWordLoop() }
+            }
+        } else {
+            wakeWord?.stop()
+            wakeWordObserverJob?.cancel()
+            wakeWordObserverJob = null
+            // Leave capture running if we're in a channel; stop otherwise.
+            if (!_state.value.connection.isActive) audioEngine.stopCapture()
+        }
+        updateNotification()
+    }
+
+    // ── speaker / native mic ──────────────────────────────────────────────────
+
+    fun setSpeakerOn(on: Boolean) {
+        _state.update { it.copy(speakerOn = on) }
+        audioEngine.setSpeakerOn(this, on)
+    }
+
+    // ── audio capture routing ─────────────────────────────────────────────────
+
+    private fun ensureCaptureObserver() {
+        if (captureObserverJob?.isActive == true) return
+        captureObserverJob = scope.launch {
             audioEngine.capturedAudio.collect { pcm ->
-                if (!_state.value.isTransmitting) return@collect
-                when (_state.value.role) {
-                    Role.HUB    -> hubMgr?.broadcastAudio(pcm)
-                    Role.CLIENT -> clientMgr?.sendAudio(pcm)
-                    Role.NONE   -> {}
+                val s = _state.value
+                when {
+                    s.isTransmitting -> when (s.role) {
+                        Role.HUB    -> hubMgr?.broadcastAudio(pcm)
+                        Role.CLIENT -> clientMgr?.sendAudio(pcm)
+                        Role.NONE   -> {}
+                    }
+                    s.ridingMode && !s.listeningForCommand ->
+                        wakeWord?.feedAudio(pcm)
                 }
             }
         }
     }
+
+    // ── hub event observer ────────────────────────────────────────────────────
 
     private fun observeHubEvents() {
         scope.launch {
@@ -173,13 +238,17 @@ class WalkieTalkieService : Service() {
         }
     }
 
+    // ── client inbound observer ───────────────────────────────────────────────
+
     private fun observeClientInbound() {
         scope.launch {
             clientMgr?.inbound?.collect { frame ->
                 when (frame) {
                     is Frame.Audio   -> audioEngine.playFrame(frame.pcm)
                     is Frame.Roster  -> _state.update { it.copy(members = frame.members) }
-                    is Frame.Blocked -> _state.update { it.copy(isBlocked = true, isTransmitting = false) }
+                    is Frame.Blocked -> _state.update {
+                        it.copy(isBlocked = true, isTransmitting = false)
+                    }
                     else             -> {}
                 }
             }
@@ -188,8 +257,8 @@ class WalkieTalkieService : Service() {
 
     private fun observeClientConnection() {
         scope.launch {
-            clientMgr?.connected?.collect { connected ->
-                if (!connected && _state.value.role == Role.CLIENT) {
+            clientMgr?.connected?.collect { isConnected ->
+                if (!isConnected && _state.value.role == Role.CLIENT) {
                     _state.update {
                         it.copy(
                             connection     = ConnectionState.Disconnected,
@@ -204,15 +273,80 @@ class WalkieTalkieService : Service() {
         }
     }
 
+    // ── wake-word → STT → Gemini pipeline ────────────────────────────────────
+
+    private suspend fun observeWakeWordLoop() {
+        wakeWord?.detections?.collect {
+            _state.update { it.copy(listeningForCommand = true, lastCommandText = null) }
+            updateNotification()
+
+            // Free the mic so SpeechRecognizer gets exclusive access.
+            audioEngine.stopCapture()
+
+            val text = try {
+                stt!!.listen()
+            } catch (_: SpeechRecognitionException) {
+                // STT unavailable or no speech — fall back to a 3-second PTT burst.
+                audioEngine.startCapture()
+                ensureCaptureObserver()
+                startPtt()
+                delay(3_000)
+                stopPtt()
+                return@collect
+            } finally {
+                audioEngine.startCapture()   // always restart capture
+                ensureCaptureObserver()
+                _state.update { it.copy(listeningForCommand = false) }
+                updateNotification()
+            }
+
+            if (text.isNotBlank()) {
+                _state.update { it.copy(lastCommandText = text) }
+                val command = commandProcessor!!.process(text)
+                executeCommand(command)
+            }
+        }
+    }
+
+    private suspend fun executeCommand(command: VoiceCommand) {
+        when (command) {
+            is VoiceCommand.CreateChannel    -> createChannel(command.channelName)
+            is VoiceCommand.JoinChannel      -> joinChannel(command.channelName)
+            is VoiceCommand.StartTransmitting -> {
+                startPtt()
+                delay(3_000)
+                stopPtt()
+            }
+            is VoiceCommand.StopTransmitting -> stopPtt()
+            is VoiceCommand.Disconnect       -> leaveChannel()
+            is VoiceCommand.SetRidingMode    -> setRidingMode(command.enabled)
+            is VoiceCommand.Unknown          -> {}
+        }
+    }
+
+    private fun leaveChannel() {
+        hubMgr?.disconnect()
+        clientMgr?.disconnect()
+        val preserved = _state.value.let { it.copy(ridingMode = it.ridingMode, speakerOn = it.speakerOn) }
+        _state.value = WalkieState(ridingMode = preserved.ridingMode, speakerOn = preserved.speakerOn)
+        updateNotification()
+    }
+
+    // ── lifecycle ─────────────────────────────────────────────────────────────
+
     override fun onBind(intent: Intent): IBinder = binder
 
     override fun onDestroy() {
+        wakeWord?.stop()
+        wakeWordObserverJob?.cancel()
         hubMgr?.disconnect()
         clientMgr?.disconnect()
         audioEngine.release()
         scope.cancel()
         super.onDestroy()
     }
+
+    // ── notification helpers ──────────────────────────────────────────────────
 
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
@@ -241,10 +375,12 @@ class WalkieTalkieService : Service() {
     private fun updateNotification() {
         val s = _state.value
         val status = when {
-            s.isTransmitting         -> "Transmitting"
+            s.listeningForCommand        -> "Listening for command…"
+            s.ridingMode && !s.connection.isActive -> "Riding mode — say \"Porcupine\""
+            s.isTransmitting             -> "Transmitting"
             s.currentTransmitter != null -> "Receiving from ${s.currentTransmitter}"
-            s.connection.isActive    -> s.channelName?.let { "Channel: $it" } ?: s.connection.label
-            else                     -> s.connection.label
+            s.connection.isActive        -> s.channelName?.let { "Channel: $it" } ?: s.connection.label
+            else                         -> s.connection.label
         }
         getSystemService(NotificationManager::class.java)
             .notify(NOTIFICATION_ID, buildNotification(status))

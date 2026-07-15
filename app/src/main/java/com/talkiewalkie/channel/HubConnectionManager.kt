@@ -11,7 +11,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicReference
 
 sealed class HubEvent {
     data class ClientJoined(val name: String)           : HubEvent()
@@ -33,8 +32,8 @@ class HubConnectionManager(
     private val localName: String,
     private val scope: CoroutineScope,
 ) {
-    private val clients             = ConcurrentHashMap<String, ConnectedClient>()
-    private val currentTransmitter  = AtomicReference<String?>(null)
+    private val clients      = ConcurrentHashMap<String, ConnectedClient>()
+    private val txLock       = HalfDuplexLock()
     private var serverSocket: BluetoothServerSocket? = null
 
     private val _events = MutableSharedFlow<HubEvent>(extraBufferCapacity = 256)
@@ -92,14 +91,14 @@ class HubConnectionManager(
     }
 
     private suspend fun handleAudio(from: String, pcm: ByteArray) {
-        if (currentTransmitter.get() == from) {
+        if (txLock.current == from) {
             _events.emit(HubEvent.AudioFrame(from, pcm))
             relayAudioExcept(from, pcm)
         }
     }
 
     private suspend fun handleBusy(from: String) {
-        if (currentTransmitter.compareAndSet(null, from)) {
+        if (txLock.acquire(from)) {
             _events.emit(HubEvent.TransmitterChanged(from))
         } else {
             sendTo(from, Frame.Blocked)
@@ -107,18 +106,18 @@ class HubConnectionManager(
     }
 
     private suspend fun handleFree(from: String) {
-        if (currentTransmitter.compareAndSet(from, null)) {
+        if (txLock.release(from)) {
             _events.emit(HubEvent.TransmitterChanged(null))
         }
     }
 
     fun acquireTransmitter(name: String): Boolean =
-        currentTransmitter.compareAndSet(null, name).also { ok ->
+        txLock.acquire(name).also { ok ->
             if (ok) scope.launch { _events.emit(HubEvent.TransmitterChanged(name)) }
         }
 
     fun releaseTransmitter(name: String) {
-        if (currentTransmitter.compareAndSet(name, null)) {
+        if (txLock.release(name)) {
             scope.launch { _events.emit(HubEvent.TransmitterChanged(null)) }
         }
     }
@@ -151,7 +150,7 @@ class HubConnectionManager(
             it.writerJob?.cancel()
             runCatching { socket.close() }
         }
-        if (currentTransmitter.compareAndSet(name, null)) {
+        if (txLock.release(name)) {
             _events.emit(HubEvent.TransmitterChanged(null))
         }
         _events.emit(HubEvent.ClientLeft(name))

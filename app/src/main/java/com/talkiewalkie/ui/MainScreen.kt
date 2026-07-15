@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -27,6 +28,8 @@ fun MainScreen(
     state: WalkieState,
     onPttDown: () -> Unit,
     onPttUp: () -> Unit,
+    onRidingModeToggle: (Boolean) -> Unit = {},
+    onSpeakerToggle: (Boolean) -> Unit    = {},
     modifier: Modifier = Modifier,
 ) {
     Box(modifier = modifier.fillMaxSize()) {
@@ -43,8 +46,8 @@ fun MainScreen(
 
             if (state.members.isNotEmpty()) {
                 MemberRoster(
-                    members             = state.members,
-                    currentTransmitter  = state.currentTransmitter,
+                    members            = state.members,
+                    currentTransmitter = state.currentTransmitter,
                 )
             }
 
@@ -53,15 +56,27 @@ fun MainScreen(
             state.currentTransmitter?.let { who ->
                 Text(
                     "🔊 $who is transmitting",
-                    style  = MaterialTheme.typography.bodyMedium,
-                    color  = MaterialTheme.colorScheme.secondary,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+
+            if (state.listeningForCommand) {
+                CommandListeningIndicator()
+            }
+
+            state.lastCommandText?.let { text ->
+                Text(
+                    "Heard: \"$text\"",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
 
             PttButton(
                 isTransmitting = state.isTransmitting,
                 isBlocked      = state.isBlocked,
-                // Gate on connection only — not isBlocked — so that the
+                // Keyed on connection only — not isBlocked — so that the
                 // finger-release event still fires after a BLOCKED frame
                 // arrives mid-press and lets stopPtt() clear the flag.
                 enabled        = state.connection.isActive,
@@ -70,13 +85,23 @@ fun MainScreen(
             )
 
             Spacer(Modifier.weight(1f))
+
+            RidingModeRow(
+                ridingMode = state.ridingMode,
+                onToggle   = onRidingModeToggle,
+            )
+
+            SpeakerRow(
+                speakerOn = state.speakerOn,
+                onToggle  = onSpeakerToggle,
+            )
         }
 
-        if (state.isBlocked) {
-            BlockedOverlay()
-        }
+        if (state.isBlocked) BlockedOverlay()
     }
 }
+
+// ── sub-composables ───────────────────────────────────────────────────────────
 
 @Composable
 private fun ChannelHeader(state: WalkieState) {
@@ -95,15 +120,12 @@ private fun ChannelHeader(state: WalkieState) {
                 MaterialTheme.colorScheme.primary
             else
                 MaterialTheme.colorScheme.secondary
-            Surface(
-                shape = CircleShape,
-                color = color.copy(alpha = 0.15f),
-            ) {
+            Surface(shape = CircleShape, color = color.copy(alpha = 0.15f)) {
                 Text(
                     label,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    style    = MaterialTheme.typography.labelSmall,
-                    color    = color,
+                    modifier   = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    style      = MaterialTheme.typography.labelSmall,
+                    color      = color,
                     fontWeight = FontWeight.Bold,
                 )
             }
@@ -128,10 +150,7 @@ private fun ConnectionStatusCard(state: WalkieState) {
 }
 
 @Composable
-private fun MemberRoster(
-    members: List<String>,
-    currentTransmitter: String?,
-) {
+private fun MemberRoster(members: List<String>, currentTransmitter: String?) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
@@ -173,6 +192,32 @@ private fun MemberRoster(
 }
 
 @Composable
+private fun CommandListeningIndicator() {
+    val infiniteTransition = rememberInfiniteTransition(label = "cmd-pulse")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue  = 0.4f,
+        targetValue   = 1f,
+        animationSpec = infiniteRepeatable(tween(600), RepeatMode.Reverse),
+        label         = "cmd-alpha",
+    )
+    Row(
+        verticalAlignment     = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            Icons.Default.RecordVoiceOver,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.secondary.copy(alpha = alpha),
+        )
+        Text(
+            "Listening for command…",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+    }
+}
+
+@Composable
 private fun PttButton(
     isTransmitting: Boolean,
     isBlocked: Boolean,
@@ -181,13 +226,12 @@ private fun PttButton(
     onUp: () -> Unit,
 ) {
     val targetColor = when {
-        isBlocked      -> MaterialTheme.colorScheme.error.copy(alpha = 0.4f)
+        isBlocked      -> MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
         isTransmitting -> MaterialTheme.colorScheme.error
         enabled        -> MaterialTheme.colorScheme.primary
         else           -> MaterialTheme.colorScheme.surfaceVariant
     }
     val color by animateColorAsState(targetColor, label = "ptt-color")
-
     val scale by animateFloatAsState(
         targetValue   = if (isTransmitting) 1.12f else 1f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
@@ -200,12 +244,7 @@ private fun PttButton(
         enabled        -> "PUSH TO TALK"
         else           -> "NOT CONNECTED"
     }
-
-    val icon = when {
-        isTransmitting -> Icons.Default.Mic
-        isBlocked      -> Icons.Default.MicOff
-        else           -> Icons.Default.MicOff
-    }
+    val icon = if (isTransmitting) Icons.Default.Mic else Icons.Default.MicOff
 
     Surface(
         shape    = CircleShape,
@@ -244,9 +283,78 @@ private fun PttButton(
 }
 
 @Composable
+private fun RidingModeRow(ridingMode: Boolean, onToggle: (Boolean) -> Unit) {
+    Row(
+        modifier              = Modifier.fillMaxWidth(),
+        verticalAlignment     = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Row(
+            verticalAlignment     = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                Icons.Default.RecordVoiceOver,
+                contentDescription = null,
+                tint = if (ridingMode) MaterialTheme.colorScheme.primary
+                       else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Column {
+                Text("Riding mode", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    if (ridingMode) "Say \"Porcupine\" to activate voice commands"
+                    else "Tap to enable hands-free voice commands",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Switch(
+            checked         = ridingMode,
+            onCheckedChange = onToggle,
+            modifier        = Modifier.testTag("riding_mode_switch"),
+        )
+    }
+}
+
+@Composable
+private fun SpeakerRow(speakerOn: Boolean, onToggle: (Boolean) -> Unit) {
+    Row(
+        modifier              = Modifier.fillMaxWidth(),
+        verticalAlignment     = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Row(
+            verticalAlignment     = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Icon(
+                if (speakerOn) Icons.Default.VolumeUp else Icons.Default.VolumeDown,
+                contentDescription = null,
+                tint = if (speakerOn) MaterialTheme.colorScheme.primary
+                       else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Column {
+                Text("Loudspeaker", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    if (speakerOn) "Playing through speaker" else "Playing through earpiece",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Switch(
+            checked         = speakerOn,
+            onCheckedChange = onToggle,
+            modifier        = Modifier.testTag("speaker_switch"),
+        )
+    }
+}
+
+@Composable
 private fun BlockedOverlay() {
     Box(
-        modifier = Modifier
+        modifier         = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)),
         contentAlignment = Alignment.Center,

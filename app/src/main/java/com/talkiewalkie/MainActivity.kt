@@ -55,9 +55,11 @@ class MainActivity : ComponentActivity() {
                     )
                 } else {
                     MainScreen(
-                        state     = state,
-                        onPttDown = { service?.startPtt() },
-                        onPttUp   = { service?.stopPtt() },
+                        state              = state,
+                        onPttDown          = { service?.startPtt() },
+                        onPttUp            = { service?.stopPtt() },
+                        onRidingModeToggle = { on -> service?.setRidingMode(on) },
+                        onSpeakerToggle    = { on -> service?.setSpeakerOn(on) },
                     )
                 }
             }

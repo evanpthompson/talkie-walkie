@@ -14,6 +14,8 @@ android {
         versionCode = 1
         versionName = "1.0"
 
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
         // Get your free key at console.picovoice.ai
         buildConfigField("String", "PORCUPINE_ACCESS_KEY", "\"YOUR_KEY_HERE\"")
         // Get your free key at aistudio.google.com
@@ -69,4 +71,15 @@ dependencies {
 
     // Gemini function calling for natural language voice commands
     implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
+
+    // ── unit tests ────────────────────────────────────────────────────────────
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
+
+    // ── instrumented / Compose UI tests ───────────────────────────────────────
+    androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
