@@ -72,6 +72,9 @@ dependencies {
     // Gemini function calling for natural language voice commands
     implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
 
+    // Opus audio compression — pure-Java Concentus port, no native code
+    implementation("com.github.lostromb:concentus:v1.0.2")
+
     // ── unit tests ────────────────────────────────────────────────────────────
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")

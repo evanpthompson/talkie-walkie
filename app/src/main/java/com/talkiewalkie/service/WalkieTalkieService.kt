@@ -12,6 +12,7 @@ import com.talkiewalkie.BuildConfig
 import com.talkiewalkie.MainActivity
 import com.talkiewalkie.R
 import com.talkiewalkie.audio.AudioEngine
+import com.talkiewalkie.audio.OpusCodec
 import com.talkiewalkie.channel.ChannelManager
 import com.talkiewalkie.channel.ClientConnectionManager
 import com.talkiewalkie.channel.HubConnectionManager
@@ -36,6 +37,7 @@ class WalkieTalkieService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private lateinit var audioEngine: AudioEngine
+    private val opusCodec = OpusCodec()
 
     private var hubMgr:    HubConnectionManager?    = null
     private var clientMgr: ClientConnectionManager? = null
@@ -163,7 +165,7 @@ class WalkieTalkieService : Service() {
                 inboundJob = scope.launch {
                     mgr.inbound.collect { frame ->
                         when (frame) {
-                            is Frame.Audio   -> audioEngine.playFrame(frame.pcm)
+                            is Frame.Audio   -> audioEngine.playFrame(opusCodec.decode(frame.pcm))
                             is Frame.Roster  -> _state.update { it.copy(members = frame.members) }
                             is Frame.Blocked -> _state.update {
                                 it.copy(isBlocked = true, isTransmitting = false)
@@ -237,6 +239,7 @@ class WalkieTalkieService : Service() {
             Role.NONE   -> {}
         }
         _state.update { it.copy(isTransmitting = false, isBlocked = false) }
+        opusCodec.resetEncoder()
         updateNotification()
     }
 
@@ -285,10 +288,15 @@ class WalkieTalkieService : Service() {
             audioEngine.capturedAudio.collect { pcm ->
                 val s = _state.value
                 when {
-                    s.isTransmitting -> when (s.role) {
-                        Role.HUB    -> hubMgr?.broadcastAudio(pcm)
-                        Role.CLIENT -> clientMgr?.sendAudio(pcm)
-                        Role.NONE   -> {}
+                    s.isTransmitting -> {
+                        val packets = opusCodec.encode(pcm)
+                        for (packet in packets) {
+                            when (s.role) {
+                                Role.HUB    -> hubMgr?.broadcastAudio(packet)
+                                Role.CLIENT -> clientMgr?.sendAudio(packet)
+                                Role.NONE   -> {}
+                            }
+                        }
                     }
                     s.ridingMode && !s.listeningForCommand ->
                         wakeWord?.feedAudio(pcm)
@@ -308,7 +316,7 @@ class WalkieTalkieService : Service() {
                     is HubEvent.ClientLeft         ->
                         _state.update { it.copy(members = hubMgr?.memberNames ?: it.members) }
                     is HubEvent.AudioFrame         ->
-                        audioEngine.playFrame(event.pcm)
+                        audioEngine.playFrame(opusCodec.decode(event.pcm))
                     is HubEvent.TransmitterChanged -> {
                         _state.update { it.copy(currentTransmitter = event.who) }
                         updateNotification()
