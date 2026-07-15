@@ -34,6 +34,13 @@ private const val NOTIFICATION_ID = 1
 
 class WalkieTalkieService : Service() {
 
+    companion object {
+        const val ACTION_PTT_START = "com.talkiewalkie.ACTION_PTT_START"
+        const val ACTION_PTT_STOP  = "com.talkiewalkie.ACTION_PTT_STOP"
+        private const val REQ_PTT_START = 10
+        private const val REQ_PTT_STOP  = 11
+    }
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private lateinit var audioEngine: AudioEngine
@@ -389,6 +396,14 @@ class WalkieTalkieService : Service() {
 
     // ── lifecycle ─────────────────────────────────────────────────────────────
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_PTT_START -> startPtt()
+            ACTION_PTT_STOP  -> stopPtt()
+        }
+        return START_NOT_STICKY
+    }
+
     override fun onBind(intent: Intent): IBinder = binder
 
     override fun onDestroy() {
@@ -413,18 +428,38 @@ class WalkieTalkieService : Service() {
     }
 
     private fun buildNotification(status: String): Notification {
-        val pi = PendingIntent.getActivity(
+        val tapPi = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(status)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentIntent(pi)
+            .setContentIntent(tapPi)
             .setOngoing(true)
-            .build()
+
+        val s = _state.value
+        if (s.connection.isActive) {
+            if (s.isTransmitting) {
+                val stopPi = PendingIntent.getService(
+                    this, REQ_PTT_STOP,
+                    Intent(this, WalkieTalkieService::class.java).apply { action = ACTION_PTT_STOP },
+                    PendingIntent.FLAG_IMMUTABLE,
+                )
+                builder.addAction(0, "Stop", stopPi)
+            } else {
+                val startPi = PendingIntent.getService(
+                    this, REQ_PTT_START,
+                    Intent(this, WalkieTalkieService::class.java).apply { action = ACTION_PTT_START },
+                    PendingIntent.FLAG_IMMUTABLE,
+                )
+                builder.addAction(0, "Transmit", startPi)
+            }
+        }
+
+        return builder.build()
     }
 
     private fun updateNotification() {
