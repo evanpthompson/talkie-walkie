@@ -1,6 +1,7 @@
 package com.talkiewalkie.ui
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateFloatAsState
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -8,12 +9,14 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
@@ -87,6 +90,10 @@ fun MainScreen(
             )
 
             if (state.connection.isActive) {
+                VuMeter(
+                    level = state.audioLevel,
+                    label = if (state.isTransmitting) "TX" else "RX",
+                )
                 Text(
                     "Vol ↑ = Push to Talk",
                     style = MaterialTheme.typography.bodySmall,
@@ -364,6 +371,51 @@ private fun SpeakerRow(speakerOn: Boolean, onToggle: (Boolean) -> Unit) {
             onCheckedChange = onToggle,
             modifier        = Modifier.testTag("speaker_switch"),
         )
+    }
+}
+
+@Composable
+private fun VuMeter(level: Float, label: String, modifier: Modifier = Modifier) {
+    val animatedLevel by animateFloatAsState(
+        targetValue   = level.coerceIn(0f, 1f),
+        animationSpec = tween(durationMillis = 60, easing = LinearEasing),
+        label         = "vu-level",
+    )
+    val barColor by animateColorAsState(
+        targetValue = when {
+            animatedLevel > 0.85f -> MaterialTheme.colorScheme.error
+            animatedLevel > 0.65f -> MaterialTheme.colorScheme.tertiary
+            else                  -> MaterialTheme.colorScheme.primary
+        },
+        animationSpec = tween(100),
+        label         = "vu-color",
+    )
+    Row(
+        modifier              = modifier.fillMaxWidth(),
+        verticalAlignment     = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            label,
+            style    = MaterialTheme.typography.labelSmall,
+            color    = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(24.dp),
+        )
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(8.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(animatedLevel)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(barColor),
+            )
+        }
     }
 }
 

@@ -14,6 +14,7 @@ import com.talkiewalkie.R
 import com.talkiewalkie.audio.AudioEngine
 import com.talkiewalkie.audio.OpusCodec
 import com.talkiewalkie.audio.SquelchGate
+import com.talkiewalkie.audio.rms
 import com.talkiewalkie.channel.ChannelManager
 import com.talkiewalkie.channel.ClientConnectionManager
 import com.talkiewalkie.channel.HubConnectionManager
@@ -67,6 +68,7 @@ class WalkieTalkieService : Service() {
     private var wakeWordObserverJob: Job? = null
     private var clientChannelJob:    Job? = null
     private var txTimeoutJob:        Job? = null
+    private var rxLevelDecayJob:     Job? = null
 
     private var lastRxMs = 0L
 
@@ -190,7 +192,7 @@ class WalkieTalkieService : Service() {
                                 val now = System.currentTimeMillis()
                                 if (now - lastRxMs > 500L) hapticEngine.rxStart()
                                 lastRxMs = now
-                                audioEngine.playFrame(opusCodec.decode(frame.pcm))
+                                playRxAudio(opusCodec.decode(frame.pcm))
                             }
                             is Frame.Roster  -> _state.update { it.copy(members = frame.members) }
                             is Frame.Blocked -> {
@@ -280,7 +282,7 @@ class WalkieTalkieService : Service() {
             Role.CLIENT -> if (s.isTransmitting) clientMgr?.sendFree()
             Role.NONE   -> {}
         }
-        _state.update { it.copy(isTransmitting = false, isBlocked = false, txSecondsLeft = null) }
+        _state.update { it.copy(isTransmitting = false, isBlocked = false, txSecondsLeft = null, audioLevel = 0f) }
         opusCodec.resetEncoder()
         squelchGate.reset()
         updateNotification()
@@ -323,6 +325,25 @@ class WalkieTalkieService : Service() {
         audioEngine.setSpeakerOn(this, on)
     }
 
+    // ── audio level helpers ───────────────────────────────────────────────────
+
+    // Normalize PCM RMS to 0..1 on a sqrt scale so typical speech occupies
+    // 20-80% of the bar rather than the bottom few percent.
+    private fun ByteArray.toLevel(): Float =
+        Math.sqrt(rms() / 8000.0).coerceIn(0.0, 1.0).toFloat()
+
+    // Play decoded PCM, update the VU meter level, and schedule a decay to 0
+    // 120 ms after the last frame so the bar drops cleanly when audio stops.
+    private fun playRxAudio(pcm: ByteArray) {
+        _state.update { it.copy(audioLevel = pcm.toLevel()) }
+        rxLevelDecayJob?.cancel()
+        rxLevelDecayJob = scope.launch {
+            delay(120)
+            _state.update { it.copy(audioLevel = 0f) }
+        }
+        audioEngine.playFrame(pcm)
+    }
+
     // ── audio capture routing ─────────────────────────────────────────────────
 
     private fun ensureCaptureObserver() {
@@ -332,6 +353,7 @@ class WalkieTalkieService : Service() {
                 val s = _state.value
                 when {
                     s.isTransmitting -> {
+                        _state.update { it.copy(audioLevel = pcm.toLevel()) }
                         if (squelchGate.shouldTransmit(pcm)) {
                             val packets = opusCodec.encode(pcm)
                             for (packet in packets) {
@@ -361,10 +383,11 @@ class WalkieTalkieService : Service() {
                     is HubEvent.ClientLeft         ->
                         _state.update { it.copy(members = hubMgr?.memberNames ?: it.members) }
                     is HubEvent.AudioFrame         ->
-                        audioEngine.playFrame(opusCodec.decode(event.pcm))
+                        playRxAudio(opusCodec.decode(event.pcm))
                     is HubEvent.TransmitterChanged -> {
                         val local = localDeviceName()
                         if (event.who != null && event.who != local) hapticEngine.rxStart()
+                        if (event.who == null) _state.update { it.copy(audioLevel = 0f) }
                         _state.update { it.copy(currentTransmitter = event.who) }
                         updateNotification()
                     }
