@@ -125,3 +125,15 @@ fun ByteArray.toShortArray(): ShortArray {
     }
     return out
 }
+
+// Root-mean-square of a little-endian 16-bit PCM frame; 0.0 for empty arrays.
+fun ByteArray.rms(): Double {
+    if (size < 2) return 0.0
+    var sum = 0.0
+    val end = size and 1.inv()   // round down to even byte boundary
+    for (i in 0 until end step 2) {
+        val sample = ((this[i].toInt() and 0xFF) or (this[i + 1].toInt() shl 8)).toShort().toDouble()
+        sum += sample * sample
+    }
+    return Math.sqrt(sum / (end / 2))
+}

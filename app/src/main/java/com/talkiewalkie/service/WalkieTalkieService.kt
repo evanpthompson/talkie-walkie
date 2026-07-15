@@ -13,6 +13,7 @@ import com.talkiewalkie.MainActivity
 import com.talkiewalkie.R
 import com.talkiewalkie.audio.AudioEngine
 import com.talkiewalkie.audio.OpusCodec
+import com.talkiewalkie.audio.SquelchGate
 import com.talkiewalkie.channel.ChannelManager
 import com.talkiewalkie.channel.ClientConnectionManager
 import com.talkiewalkie.channel.HubConnectionManager
@@ -44,7 +45,8 @@ class WalkieTalkieService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private lateinit var audioEngine: AudioEngine
-    private val opusCodec = OpusCodec()
+    private val opusCodec   = OpusCodec()
+    private val squelchGate = SquelchGate()
 
     private var hubMgr:    HubConnectionManager?    = null
     private var clientMgr: ClientConnectionManager? = null
@@ -247,6 +249,7 @@ class WalkieTalkieService : Service() {
         }
         _state.update { it.copy(isTransmitting = false, isBlocked = false) }
         opusCodec.resetEncoder()
+        squelchGate.reset()
         updateNotification()
     }
 
@@ -296,12 +299,14 @@ class WalkieTalkieService : Service() {
                 val s = _state.value
                 when {
                     s.isTransmitting -> {
-                        val packets = opusCodec.encode(pcm)
-                        for (packet in packets) {
-                            when (s.role) {
-                                Role.HUB    -> hubMgr?.broadcastAudio(packet)
-                                Role.CLIENT -> clientMgr?.sendAudio(packet)
-                                Role.NONE   -> {}
+                        if (squelchGate.shouldTransmit(pcm)) {
+                            val packets = opusCodec.encode(pcm)
+                            for (packet in packets) {
+                                when (s.role) {
+                                    Role.HUB    -> hubMgr?.broadcastAudio(packet)
+                                    Role.CLIENT -> clientMgr?.sendAudio(packet)
+                                    Role.NONE   -> {}
+                                }
                             }
                         }
                     }
