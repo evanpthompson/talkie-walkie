@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.*
 import android.bluetooth.BluetoothManager
 import android.content.Intent
+import android.media.AudioManager
 import android.os.Binder
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -68,6 +69,20 @@ class WalkieTalkieService : Service() {
         audioEngine = AudioEngine(scope)
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Ready"))
+        observeAudioMode()
+    }
+
+    private fun observeAudioMode() {
+        scope.launch {
+            state
+                .map { it.connection.isActive }
+                .distinctUntilChanged()
+                .collect { isActive ->
+                    val am = getSystemService(AUDIO_SERVICE) as AudioManager
+                    am.mode = if (isActive) AudioManager.MODE_IN_COMMUNICATION
+                              else          AudioManager.MODE_NORMAL
+                }
+        }
     }
 
     // ── channel lifecycle ─────────────────────────────────────────────────────

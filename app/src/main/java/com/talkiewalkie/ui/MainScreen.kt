@@ -84,6 +84,14 @@ fun MainScreen(
                 onUp           = onPttUp,
             )
 
+            if (state.connection.isActive) {
+                Text(
+                    "Vol ↑ = Push to Talk",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
             Spacer(Modifier.weight(1f))
 
             RidingModeRow(

@@ -5,6 +5,8 @@ import android.content.*
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.view.KeyEvent
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,6 +50,30 @@ class MainActivity : ComponentActivity() {
                 val state by (service?.state ?: MutableStateFlow(WalkieState()))
                     .collectAsStateWithLifecycle()
 
+                LaunchedEffect(state.ridingMode) {
+                    if (state.ridingMode) {
+                        window.addFlags(
+                            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                        )
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                            setShowWhenLocked(true)
+                            setTurnScreenOn(true)
+                        }
+                    } else {
+                        window.clearFlags(
+                            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                        )
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                            setShowWhenLocked(false)
+                            setTurnScreenOn(false)
+                        }
+                    }
+                }
+
                 if (state.channelName == null) {
                     ChannelScreen(
                         onCreateChannel = { name -> service?.createChannel(name) },
@@ -84,6 +110,28 @@ class MainActivity : ComponentActivity() {
         val intent = Intent(this, WalkieTalkieService::class.java)
         startForegroundService(intent)
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP && event.repeatCount == 0) {
+            val svc = walkieService ?: return super.onKeyDown(keyCode, event)
+            if (svc.state.value.connection.isActive) {
+                svc.startPtt()
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            val svc = walkieService ?: return super.onKeyUp(keyCode, event)
+            if (svc.state.value.isTransmitting) {
+                svc.stopPtt()
+                return true
+            }
+        }
+        return super.onKeyUp(keyCode, event)
     }
 
     override fun onDestroy() {
