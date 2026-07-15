@@ -1,8 +1,6 @@
 package com.talkiewalkie
 
 import android.Manifest
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothManager
 import android.content.*
 import android.os.Build
 import android.os.Bundle
@@ -14,8 +12,10 @@ import androidx.compose.runtime.*
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.talkiewalkie.model.WalkieState
 import com.talkiewalkie.service.WalkieTalkieService
+import com.talkiewalkie.ui.ChannelScreen
 import com.talkiewalkie.ui.MainScreen
 import com.talkiewalkie.ui.theme.TalkieWalkieTheme
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
 
@@ -26,7 +26,6 @@ class MainActivity : ComponentActivity() {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             walkieService = (binder as WalkieTalkieService.LocalBinder).service()
             bound = true
-            walkieService?.goLive()
         }
         override fun onServiceDisconnected(name: ComponentName) {
             bound = false
@@ -48,16 +47,19 @@ class MainActivity : ComponentActivity() {
                 val service = walkieService
                 val state by (service?.state ?: MutableStateFlow(WalkieState()))
                     .collectAsStateWithLifecycle()
-                val pairedDevices = remember { getPairedDevices() }
 
-                MainScreen(
-                    state          = state,
-                    pairedDevices  = pairedDevices,
-                    onPttDown      = { service?.startPtt() },
-                    onPttUp        = { service?.stopPtt() },
-                    onConnectDevice = { device -> service?.connectTo(device.address) },
-                    onWakeWordToggle = { enabled -> service?.setWakeWordEnabled(enabled) },
-                )
+                if (state.channelName == null) {
+                    ChannelScreen(
+                        onCreateChannel = { name -> service?.createChannel(name) },
+                        onJoinChannel   = { name -> service?.joinChannel(name) },
+                    )
+                } else {
+                    MainScreen(
+                        state     = state,
+                        onPttDown = { service?.startPtt() },
+                        onPttUp   = { service?.stopPtt() },
+                    )
+                }
             }
         }
     }
@@ -80,12 +82,6 @@ class MainActivity : ComponentActivity() {
         val intent = Intent(this, WalkieTalkieService::class.java)
         startForegroundService(intent)
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
-    }
-
-    @Suppress("MissingPermission")
-    private fun getPairedDevices(): List<BluetoothDevice> {
-        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
-        return adapter?.bondedDevices?.toList() ?: emptyList()
     }
 
     override fun onDestroy() {

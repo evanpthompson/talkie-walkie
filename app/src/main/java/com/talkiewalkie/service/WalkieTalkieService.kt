@@ -1,22 +1,23 @@
 package com.talkiewalkie.service
 
+import android.annotation.SuppressLint
 import android.app.*
 import android.bluetooth.BluetoothManager
 import android.content.Intent
 import android.os.Binder
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import com.talkiewalkie.BuildConfig
 import com.talkiewalkie.MainActivity
 import com.talkiewalkie.R
 import com.talkiewalkie.audio.AudioEngine
-import com.talkiewalkie.bluetooth.BluetoothConnectionManager
+import com.talkiewalkie.channel.ChannelManager
+import com.talkiewalkie.channel.ClientConnectionManager
+import com.talkiewalkie.channel.HubConnectionManager
+import com.talkiewalkie.channel.HubEvent
+import com.talkiewalkie.model.ConnectionState
+import com.talkiewalkie.model.Role
 import com.talkiewalkie.model.WalkieState
-import com.talkiewalkie.voice.SpeechRecognitionException
-import com.talkiewalkie.voice.SpeechToTextEngine
-import com.talkiewalkie.voice.VoiceCommand
-import com.talkiewalkie.voice.VoiceCommandProcessor
-import com.talkiewalkie.wakeword.WakeWordDetector
+import com.talkiewalkie.protocol.Frame
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
@@ -28,10 +29,9 @@ class WalkieTalkieService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private lateinit var audioEngine: AudioEngine
-    private lateinit var btManager: BluetoothConnectionManager
-    private lateinit var wakeWord: WakeWordDetector
-    private lateinit var stt: SpeechToTextEngine
-    private lateinit var commandProcessor: VoiceCommandProcessor
+
+    private var hubMgr:    HubConnectionManager?    = null
+    private var clientMgr: ClientConnectionManager? = null
 
     private val _state = MutableStateFlow(WalkieState())
     val state: StateFlow<WalkieState> = _state.asStateFlow()
@@ -41,142 +41,165 @@ class WalkieTalkieService : Service() {
     }
     private val binder = LocalBinder()
 
+    @SuppressLint("MissingPermission")
+    private fun adapter() =
+        (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
+
+    @SuppressLint("MissingPermission")
+    private fun localDeviceName(): String = adapter().name ?: android.os.Build.MODEL
+
     override fun onCreate() {
         super.onCreate()
-        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
-        audioEngine      = AudioEngine(scope)
-        btManager        = BluetoothConnectionManager(adapter, scope)
-        wakeWord         = WakeWordDetector(this)
-        stt              = SpeechToTextEngine(this)
-        commandProcessor = VoiceCommandProcessor(BuildConfig.GEMINI_API_KEY)
-
+        audioEngine = AudioEngine(scope)
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Ready"))
-
-        observeConnectionState()
-        observeIncomingAudio()
     }
 
-    fun goLive() {
+    @SuppressLint("MissingPermission")
+    fun createChannel(name: String) {
+        val localName = localDeviceName()
+        val uuid      = ChannelManager.channelUuid(name)
+        hubMgr = HubConnectionManager(adapter(), uuid, localName, scope)
+        _state.update {
+            it.copy(
+                channelName = name,
+                role        = Role.HUB,
+                connection  = ConnectionState.Hosting,
+                members     = listOf(localName),
+            )
+        }
+        hubMgr!!.start()
         audioEngine.startPlayback()
         audioEngine.startCapture()
-        wakeWord.start(BuildConfig.PORCUPINE_ACCESS_KEY)
-        btManager.startAccepting()
         observeCapture()
-        observeWakeWord()
+        observeHubEvents()
+        updateNotification()
     }
 
-    fun connectTo(deviceAddress: String) {
-        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
-        btManager.connectTo(adapter.getRemoteDevice(deviceAddress))
+    @SuppressLint("MissingPermission")
+    fun joinChannel(name: String) {
+        val localName = localDeviceName()
+        val uuid      = ChannelManager.channelUuid(name)
+        val devices   = adapter().bondedDevices?.toList() ?: emptyList()
+        clientMgr     = ClientConnectionManager(uuid, scope)
+        _state.update {
+            it.copy(
+                channelName = name,
+                role        = Role.CLIENT,
+                connection  = ConnectionState.Searching,
+            )
+        }
+        scope.launch {
+            val hubName = clientMgr!!.connect(localName, devices)
+            if (hubName != null) {
+                _state.update { it.copy(connection = ConnectionState.Connected(hubName)) }
+                audioEngine.startPlayback()
+                audioEngine.startCapture()
+                observeCapture()
+                observeClientInbound()
+                observeClientConnection()
+            } else {
+                _state.update {
+                    it.copy(
+                        channelName = null,
+                        role        = Role.NONE,
+                        connection  = ConnectionState.Disconnected,
+                    )
+                }
+            }
+            updateNotification()
+        }
     }
 
     fun startPtt() {
-        _state.update { it.copy(isTransmitting = true) }
+        val s = _state.value
+        when (s.role) {
+            Role.HUB -> {
+                if (hubMgr?.acquireTransmitter(localDeviceName()) == true) {
+                    _state.update { it.copy(isTransmitting = true) }
+                }
+            }
+            Role.CLIENT -> {
+                if (!s.isBlocked) {
+                    clientMgr?.sendBusy()
+                    _state.update { it.copy(isTransmitting = true) }
+                }
+            }
+            Role.NONE -> {}
+        }
         updateNotification()
     }
 
     fun stopPtt() {
-        _state.update { it.copy(isTransmitting = false) }
+        val s = _state.value
+        when (s.role) {
+            Role.HUB    -> hubMgr?.releaseTransmitter(localDeviceName())
+            Role.CLIENT -> if (s.isTransmitting) clientMgr?.sendFree()
+            Role.NONE   -> {}
+        }
+        _state.update { it.copy(isTransmitting = false, isBlocked = false) }
         updateNotification()
     }
 
-    fun setWakeWordEnabled(enabled: Boolean) {
-        _state.update { it.copy(wakeWordEnabled = enabled) }
-    }
-
-    // Routes captured frames: transmit over BT, feed Porcupine, or drop (during STT).
     private fun observeCapture() {
         scope.launch {
             audioEngine.capturedAudio.collect { pcm ->
-                val s = _state.value
-                when {
-                    s.isTransmitting       -> btManager.send(pcm)
-                    s.wakeWordEnabled
-                    && !s.listeningForCommand -> wakeWord.feedAudio(pcm)
+                if (!_state.value.isTransmitting) return@collect
+                when (_state.value.role) {
+                    Role.HUB    -> hubMgr?.broadcastAudio(pcm)
+                    Role.CLIENT -> clientMgr?.sendAudio(pcm)
+                    Role.NONE   -> {}
                 }
             }
         }
     }
 
-    // Wake word → stop AudioRecord (free mic for STT) → STT → Gemini → execute command.
-    private fun observeWakeWord() {
+    private fun observeHubEvents() {
         scope.launch {
-            wakeWord.detections.collect {
-                _state.update { it.copy(listeningForCommand = true, lastCommandText = null) }
-                updateNotification()
+            hubMgr?.events?.collect { event ->
+                when (event) {
+                    is HubEvent.ClientJoined       ->
+                        _state.update { it.copy(members = hubMgr?.memberNames ?: it.members) }
+                    is HubEvent.ClientLeft         ->
+                        _state.update { it.copy(members = hubMgr?.memberNames ?: it.members) }
+                    is HubEvent.AudioFrame         ->
+                        audioEngine.playFrame(event.pcm)
+                    is HubEvent.TransmitterChanged -> {
+                        _state.update { it.copy(currentTransmitter = event.who) }
+                        updateNotification()
+                    }
+                }
+            }
+        }
+    }
 
-                // Release mic so SpeechRecognizer gets exclusive access.
-                audioEngine.stopCapture()
+    private fun observeClientInbound() {
+        scope.launch {
+            clientMgr?.inbound?.collect { frame ->
+                when (frame) {
+                    is Frame.Audio   -> audioEngine.playFrame(frame.pcm)
+                    is Frame.Roster  -> _state.update { it.copy(members = frame.members) }
+                    is Frame.Blocked -> _state.update { it.copy(isBlocked = true, isTransmitting = false) }
+                    else             -> {}
+                }
+            }
+        }
+    }
 
-                val text = try {
-                    stt.listen()
-                } catch (e: SpeechRecognitionException) {
-                    // STT unavailable or no speech detected — fall back to a timed PTT burst.
-                    audioEngine.startCapture()
-                    _state.update { it.copy(listeningForCommand = false) }
-                    startPtt()
-                    delay(3_000)
-                    stopPtt()
-                    return@collect
-                } finally {
-                    // Always restart capture, even on error paths above.
-                    if (!audioEngine.isCapturing) audioEngine.startCapture()
-                    _state.update { it.copy(listeningForCommand = false) }
+    private fun observeClientConnection() {
+        scope.launch {
+            clientMgr?.connected?.collect { connected ->
+                if (!connected && _state.value.role == Role.CLIENT) {
+                    _state.update {
+                        it.copy(
+                            connection     = ConnectionState.Disconnected,
+                            members        = emptyList(),
+                            isTransmitting = false,
+                            isBlocked      = false,
+                        )
+                    }
                     updateNotification()
                 }
-
-                if (text.isNotBlank()) {
-                    _state.update { it.copy(lastCommandText = text) }
-                    val command = commandProcessor.process(text)
-                    executeCommand(command)
-                }
-            }
-        }
-    }
-
-    private suspend fun executeCommand(command: VoiceCommand) {
-        when (command) {
-            is VoiceCommand.ConnectToDevice  -> connectToByName(command.deviceName)
-            is VoiceCommand.StartTransmitting -> {
-                startPtt()
-                delay(3_000)
-                stopPtt()
-            }
-            is VoiceCommand.StopTransmitting -> stopPtt()
-            is VoiceCommand.Disconnect       -> btManager.disconnect()
-            is VoiceCommand.SetWakeWord      -> setWakeWordEnabled(command.enabled)
-            is VoiceCommand.Unknown          -> { /* no action */ }
-        }
-    }
-
-    @Suppress("MissingPermission")
-    private fun connectToByName(name: String) {
-        val adapter = (getSystemService(BLUETOOTH_SERVICE) as BluetoothManager).adapter
-        val device  = adapter.bondedDevices
-            ?.firstOrNull { it.name?.contains(name, ignoreCase = true) == true }
-        if (device != null) {
-            btManager.connectTo(device)
-        } else {
-            _state.update { it.copy(lastCommandText = "Device \"$name\" not found in paired devices") }
-        }
-    }
-
-    private fun observeIncomingAudio() {
-        scope.launch {
-            btManager.incomingAudio.collect { pcm ->
-                _state.update { it.copy(isReceiving = true) }
-                audioEngine.playFrame(pcm)
-                _state.update { it.copy(isReceiving = false) }
-            }
-        }
-    }
-
-    private fun observeConnectionState() {
-        scope.launch {
-            btManager.state.collect { conn ->
-                _state.update { it.copy(connection = conn) }
-                updateNotification()
             }
         }
     }
@@ -184,9 +207,9 @@ class WalkieTalkieService : Service() {
     override fun onBind(intent: Intent): IBinder = binder
 
     override fun onDestroy() {
-        wakeWord.stop()
+        hubMgr?.disconnect()
+        clientMgr?.disconnect()
         audioEngine.release()
-        btManager.disconnect()
         scope.cancel()
         super.onDestroy()
     }
@@ -195,7 +218,7 @@ class WalkieTalkieService : Service() {
         val channel = NotificationChannel(
             CHANNEL_ID,
             getString(R.string.notification_channel_name),
-            NotificationManager.IMPORTANCE_LOW
+            NotificationManager.IMPORTANCE_LOW,
         )
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
@@ -204,7 +227,7 @@ class WalkieTalkieService : Service() {
         val pi = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_IMMUTABLE,
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_title))
@@ -218,9 +241,10 @@ class WalkieTalkieService : Service() {
     private fun updateNotification() {
         val s = _state.value
         val status = when {
-            s.listeningForCommand -> "Listening for command…"
-            s.isTransmitting      -> "Transmitting"
-            else                  -> s.connection.label
+            s.isTransmitting         -> "Transmitting"
+            s.currentTransmitter != null -> "Receiving from ${s.currentTransmitter}"
+            s.connection.isActive    -> s.channelName?.let { "Channel: $it" } ?: s.connection.label
+            else                     -> s.connection.label
         }
         getSystemService(NotificationManager::class.java)
             .notify(NOTIFICATION_ID, buildNotification(status))

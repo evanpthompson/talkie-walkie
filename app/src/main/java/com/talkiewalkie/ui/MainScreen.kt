@@ -1,153 +1,172 @@
 package com.talkiewalkie.ui
 
-import android.bluetooth.BluetoothDevice
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.*
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.BluetoothConnected
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MicOff
-import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.talkiewalkie.model.ConnectionState
+import com.talkiewalkie.model.Role
 import com.talkiewalkie.model.WalkieState
 
 @Composable
 fun MainScreen(
     state: WalkieState,
-    pairedDevices: List<BluetoothDevice>,
     onPttDown: () -> Unit,
     onPttUp: () -> Unit,
-    onConnectDevice: (BluetoothDevice) -> Unit,
-    onWakeWordToggle: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement  = Arrangement.spacedBy(16.dp),
-    ) {
-        ConnectionStatusCard(state.connection)
-
-        // Replaces normal content while Gemini is processing a voice command.
-        AnimatedVisibility(
-            visible = state.listeningForCommand,
-            enter   = fadeIn(),
-            exit    = fadeOut(),
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(
+            modifier              = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            horizontalAlignment   = Alignment.CenterHorizontally,
+            verticalArrangement   = Arrangement.spacedBy(16.dp),
         ) {
-            CommandListeningBanner()
+            ChannelHeader(state)
+
+            ConnectionStatusCard(state)
+
+            if (state.members.isNotEmpty()) {
+                MemberRoster(
+                    members             = state.members,
+                    currentTransmitter  = state.currentTransmitter,
+                )
+            }
+
+            Spacer(Modifier.weight(1f))
+
+            state.currentTransmitter?.let { who ->
+                Text(
+                    "🔊 $who is transmitting",
+                    style  = MaterialTheme.typography.bodyMedium,
+                    color  = MaterialTheme.colorScheme.secondary,
+                )
+            }
+
+            PttButton(
+                isTransmitting = state.isTransmitting,
+                isBlocked      = state.isBlocked,
+                // Gate on connection only — not isBlocked — so that the
+                // finger-release event still fires after a BLOCKED frame
+                // arrives mid-press and lets stopPtt() clear the flag.
+                enabled        = state.connection.isActive,
+                onDown         = onPttDown,
+                onUp           = onPttUp,
+            )
+
+            Spacer(Modifier.weight(1f))
         }
 
-        Spacer(Modifier.weight(1f))
-
-        PttButton(
-            isTransmitting        = state.isTransmitting,
-            isListeningForCommand = state.listeningForCommand,
-            enabled               = state.connection.isConnected && !state.listeningForCommand,
-            onDown                = onPttDown,
-            onUp                  = onPttUp,
-        )
-
-        WakeWordRow(
-            enabled   = state.wakeWordEnabled,
-            connected = state.connection.isConnected,
-            onToggle  = onWakeWordToggle,
-        )
-
-        // Show last Gemini-interpreted command text as subtle feedback.
-        state.lastCommandText?.let { text ->
-            Text(
-                text  = "Heard: \"$text\"",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        Spacer(Modifier.weight(1f))
-
-        if (!state.connection.isConnected) {
-            PairedDeviceList(
-                devices   = pairedDevices,
-                onConnect = onConnectDevice,
-            )
+        if (state.isBlocked) {
+            BlockedOverlay()
         }
     }
 }
 
 @Composable
-private fun ConnectionStatusCard(connection: ConnectionState) {
-    val icon = if (connection.isConnected) Icons.Default.BluetoothConnected
+private fun ChannelHeader(state: WalkieState) {
+    Row(
+        modifier              = Modifier.fillMaxWidth(),
+        verticalAlignment     = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            state.channelName ?: "Talkie-Walkie",
+            style = MaterialTheme.typography.titleLarge,
+        )
+        if (state.role != Role.NONE) {
+            val label = if (state.role == Role.HUB) "HUB" else "CLIENT"
+            val color = if (state.role == Role.HUB)
+                MaterialTheme.colorScheme.primary
+            else
+                MaterialTheme.colorScheme.secondary
+            Surface(
+                shape = CircleShape,
+                color = color.copy(alpha = 0.15f),
+            ) {
+                Text(
+                    label,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    style    = MaterialTheme.typography.labelSmall,
+                    color    = color,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionStatusCard(state: WalkieState) {
+    val icon = if (state.connection.isActive) Icons.Default.BluetoothConnected
                else Icons.Default.Bluetooth
     Card(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Icon(icon, contentDescription = null)
-            Text(connection.label, style = MaterialTheme.typography.bodyLarge)
-        }
-    }
-}
-
-@Composable
-private fun CommandListeningBanner() {
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val alpha by infiniteTransition.animateFloat(
-        initialValue   = 0.4f,
-        targetValue    = 1f,
-        animationSpec  = infiniteRepeatable(
-            animation  = tween(600),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "pulse-alpha",
-    )
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors   = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.secondaryContainer
-        ),
-    ) {
         Row(
             modifier              = Modifier.padding(16.dp),
             verticalAlignment     = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Icon(
-                Icons.Default.RecordVoiceOver,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = alpha),
+            Icon(icon, contentDescription = null)
+            Text(state.connection.label, style = MaterialTheme.typography.bodyLarge)
+        }
+    }
+}
+
+@Composable
+private fun MemberRoster(
+    members: List<String>,
+    currentTransmitter: String?,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                "Channel members",
+                style    = MaterialTheme.typography.labelMedium,
+                color    = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp),
             )
-            Column {
-                Text(
-                    "Listening for command…",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                )
-                Text(
-                    "Say: \"connect to John\" · \"start transmitting\" · \"disconnect\"",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
-                )
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+                modifier            = Modifier.heightIn(max = 150.dp),
+            ) {
+                items(members) { name ->
+                    val isTx = name == currentTransmitter
+                    Row(
+                        verticalAlignment     = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        if (isTx) {
+                            Icon(
+                                Icons.Default.Mic,
+                                contentDescription = "Transmitting",
+                                tint     = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        } else {
+                            Spacer(Modifier.size(16.dp))
+                        }
+                        Text(
+                            name,
+                            style      = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (isTx) FontWeight.Bold else FontWeight.Normal,
+                        )
+                    }
+                }
             }
         }
     }
@@ -156,41 +175,41 @@ private fun CommandListeningBanner() {
 @Composable
 private fun PttButton(
     isTransmitting: Boolean,
-    isListeningForCommand: Boolean,
+    isBlocked: Boolean,
     enabled: Boolean,
     onDown: () -> Unit,
     onUp: () -> Unit,
 ) {
     val targetColor = when {
-        isListeningForCommand -> MaterialTheme.colorScheme.secondary
-        isTransmitting        -> MaterialTheme.colorScheme.error
-        else                  -> MaterialTheme.colorScheme.primary
+        isBlocked      -> MaterialTheme.colorScheme.error.copy(alpha = 0.4f)
+        isTransmitting -> MaterialTheme.colorScheme.error
+        enabled        -> MaterialTheme.colorScheme.primary
+        else           -> MaterialTheme.colorScheme.surfaceVariant
     }
     val color by animateColorAsState(targetColor, label = "ptt-color")
 
     val scale by animateFloatAsState(
-        targetValue   = if (isTransmitting || isListeningForCommand) 1.12f else 1f,
+        targetValue   = if (isTransmitting) 1.12f else 1f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
         label         = "ptt-scale",
     )
 
     val label = when {
-        isListeningForCommand -> "LISTENING…"
-        isTransmitting        -> "TRANSMITTING"
-        enabled               -> "PUSH TO TALK"
-        else                  -> "NOT CONNECTED"
+        isBlocked      -> "CHANNEL BUSY"
+        isTransmitting -> "TRANSMITTING"
+        enabled        -> "PUSH TO TALK"
+        else           -> "NOT CONNECTED"
     }
 
     val icon = when {
-        isListeningForCommand -> Icons.Default.RecordVoiceOver
-        isTransmitting        -> Icons.Default.Mic
-        else                  -> Icons.Default.MicOff
+        isTransmitting -> Icons.Default.Mic
+        isBlocked      -> Icons.Default.MicOff
+        else           -> Icons.Default.MicOff
     }
 
     Surface(
-        shape = CircleShape,
-        color = if (enabled || isListeningForCommand) color
-                else MaterialTheme.colorScheme.surfaceVariant,
+        shape    = CircleShape,
+        color    = color,
         modifier = Modifier
             .size(180.dp)
             .scale(scale)
@@ -225,56 +244,31 @@ private fun PttButton(
 }
 
 @Composable
-private fun WakeWordRow(
-    enabled: Boolean,
-    connected: Boolean,
-    onToggle: (Boolean) -> Unit,
-) {
-    Row(
-        modifier              = Modifier.fillMaxWidth(),
-        verticalAlignment     = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
+private fun BlockedOverlay() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)),
+        contentAlignment = Alignment.Center,
     ) {
-        Column {
-            Text("Voice commands", style = MaterialTheme.typography.bodyLarge)
-            Text(
-                when {
-                    !connected          -> "Connect first"
-                    enabled             -> "Say \"Porcupine\", then your command"
-                    else                -> "Disabled — use PTT button"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Switch(
-            checked         = enabled && connected,
-            onCheckedChange = onToggle,
-            enabled         = connected,
-        )
-    }
-}
-
-@Composable
-private fun PairedDeviceList(
-    devices: List<BluetoothDevice>,
-    onConnect: (BluetoothDevice) -> Unit,
-) {
-    if (devices.isEmpty()) return
-    Column {
-        Text(
-            "Paired devices",
-            style    = MaterialTheme.typography.titleSmall,
-            modifier = Modifier.padding(bottom = 8.dp),
-        )
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(devices) { device ->
-                OutlinedButton(
-                    onClick  = { onConnect(device) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(device.name ?: device.address)
-                }
+        Card {
+            Column(
+                modifier              = Modifier.padding(24.dp),
+                horizontalAlignment   = Alignment.CenterHorizontally,
+                verticalArrangement   = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    Icons.Default.MicOff,
+                    contentDescription = null,
+                    tint     = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(32.dp),
+                )
+                Text("Channel Busy", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Another device is transmitting",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
