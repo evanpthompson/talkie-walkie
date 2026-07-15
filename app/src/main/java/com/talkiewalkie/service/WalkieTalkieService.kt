@@ -18,9 +18,11 @@ import com.talkiewalkie.channel.ChannelManager
 import com.talkiewalkie.channel.ClientConnectionManager
 import com.talkiewalkie.channel.HubConnectionManager
 import com.talkiewalkie.channel.HubEvent
+import com.talkiewalkie.haptic.HapticEngine
 import com.talkiewalkie.model.ConnectionState
 import com.talkiewalkie.model.Role
 import com.talkiewalkie.model.WalkieState
+import com.talkiewalkie.prefs.ChannelPrefs
 import com.talkiewalkie.protocol.Frame
 import com.talkiewalkie.voice.SpeechRecognitionException
 import com.talkiewalkie.voice.SpeechToTextEngine
@@ -45,6 +47,7 @@ class WalkieTalkieService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private lateinit var audioEngine: AudioEngine
+    private lateinit var hapticEngine: HapticEngine
     private val opusCodec   = OpusCodec()
     private val squelchGate = SquelchGate()
 
@@ -60,6 +63,8 @@ class WalkieTalkieService : Service() {
     private var captureObserverJob:  Job? = null
     private var wakeWordObserverJob: Job? = null
     private var clientChannelJob:    Job? = null
+
+    private var lastRxMs = 0L
 
     private val _state = MutableStateFlow(WalkieState())
     val state: StateFlow<WalkieState> = _state.asStateFlow()
@@ -78,7 +83,8 @@ class WalkieTalkieService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        audioEngine = AudioEngine(scope)
+        audioEngine  = AudioEngine(scope)
+        hapticEngine = HapticEngine(this)
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification("Ready"))
         observeAudioMode()
@@ -112,6 +118,7 @@ class WalkieTalkieService : Service() {
                 members     = listOf(localName),
             )
         }
+        ChannelPrefs.save(this, name, Role.HUB)
         hubMgr!!.start()
         audioEngine.startPlayback()
         audioEngine.startCapture()
@@ -129,6 +136,7 @@ class WalkieTalkieService : Service() {
                 connection  = ConnectionState.Searching,
             )
         }
+        ChannelPrefs.save(this, name, Role.CLIENT)
         clientChannelJob = scope.launch { manageClientChannel(name) }
         updateNotification()
     }
@@ -174,10 +182,16 @@ class WalkieTalkieService : Service() {
                 inboundJob = scope.launch {
                     mgr.inbound.collect { frame ->
                         when (frame) {
-                            is Frame.Audio   -> audioEngine.playFrame(opusCodec.decode(frame.pcm))
+                            is Frame.Audio   -> {
+                                val now = System.currentTimeMillis()
+                                if (now - lastRxMs > 500L) hapticEngine.rxStart()
+                                lastRxMs = now
+                                audioEngine.playFrame(opusCodec.decode(frame.pcm))
+                            }
                             is Frame.Roster  -> _state.update { it.copy(members = frame.members) }
-                            is Frame.Blocked -> _state.update {
-                                it.copy(isBlocked = true, isTransmitting = false)
+                            is Frame.Blocked -> {
+                                hapticEngine.blocked()
+                                _state.update { it.copy(isBlocked = true, isTransmitting = false) }
                             }
                             else             -> {}
                         }
@@ -227,12 +241,14 @@ class WalkieTalkieService : Service() {
             Role.HUB -> {
                 if (hubMgr?.acquireTransmitter(localDeviceName()) == true) {
                     _state.update { it.copy(isTransmitting = true) }
+                    hapticEngine.pttOpen()
                 }
             }
             Role.CLIENT -> {
                 if (!s.isBlocked) {
                     clientMgr?.sendBusy()
                     _state.update { it.copy(isTransmitting = true) }
+                    hapticEngine.pttOpen()
                 }
             }
             Role.NONE -> {}
@@ -242,6 +258,7 @@ class WalkieTalkieService : Service() {
 
     fun stopPtt() {
         val s = _state.value
+        if (s.isTransmitting) hapticEngine.pttClose()
         when (s.role) {
             Role.HUB    -> hubMgr?.releaseTransmitter(localDeviceName())
             Role.CLIENT -> if (s.isTransmitting) clientMgr?.sendFree()
@@ -330,6 +347,8 @@ class WalkieTalkieService : Service() {
                     is HubEvent.AudioFrame         ->
                         audioEngine.playFrame(opusCodec.decode(event.pcm))
                     is HubEvent.TransmitterChanged -> {
+                        val local = localDeviceName()
+                        if (event.who != null && event.who != local) hapticEngine.rxStart()
                         _state.update { it.copy(currentTransmitter = event.who) }
                         updateNotification()
                     }
@@ -394,6 +413,7 @@ class WalkieTalkieService : Service() {
         clientChannelJob = null
         hubMgr?.disconnect()
         clientMgr?.disconnect()
+        ChannelPrefs.clear(this)
         val s = _state.value
         _state.value = WalkieState(ridingMode = s.ridingMode, speakerOn = s.speakerOn)
         updateNotification()
