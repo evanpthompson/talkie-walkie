@@ -55,7 +55,7 @@ Before launching the app, pair all devices with each other via Android **Setting
 
 ### 3. Build and run
 
-Open in Android Studio (Electric Eel or later), sync Gradle, and run on two or more Android 8+ devices.
+Open in Android Studio (Electric Eel or later), sync Gradle, and run on two or more Android 8+ devices. The Gradle wrapper (`./gradlew`) is checked in, pinned to Gradle 8.6 — no local Gradle install required.
 
 ---
 
@@ -272,10 +272,17 @@ app/src/main/java/com/talkiewalkie/
     WakeWordDetector.kt                 Porcupine integration; feeds 512-sample frames
 
 app/src/test/java/com/talkiewalkie/
+  audio/
+    OpusCodecTest.kt                    Round-trip encode/decode, byte helper extensions
+    SquelchGateTest.kt                  Threshold crossing, hold-frame tail, reset behavior
+  channel/
+    ChannelManagerTest.kt               UUID stability and case sensitivity
+    HalfDuplexLockTest.kt               Contention test with CountDownLatch
   model/WalkieStateTest.kt              ConnectionState labels, isActive, copy semantics,
                                         txSecondsLeft countdown range, audioLevel independence
   prefs/ChannelPrefsTest.kt             Round-trip, clear, overwrite, Role.NONE filter,
                                         corrupt/missing key defence (Robolectric)
+  protocol/FrameCodecTest.kt            Round-trip all 6 frame types, truncation/error paths
   service/TxTimeoutTest.kt              Virtual-time countdown: pre-warning silence, all 5 warnings,
                                         per-second spacing, cancellation at each phase
 ```
