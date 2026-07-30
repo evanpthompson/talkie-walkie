@@ -4,6 +4,9 @@ Native Android Bluetooth walkie-talkie — push-to-talk over Classic Bluetooth R
 
 Requires Android 8.0+ (API 26). No internet required for PTT; internet is only used for Gemini voice command parsing.
 
+See [`docs/spec.md`](docs/spec.md) for the formal system spec (protocol,
+state machine, requirements, known limitations) and the roadmap.
+
 ---
 
 ## Features
