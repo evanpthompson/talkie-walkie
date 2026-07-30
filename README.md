@@ -13,10 +13,18 @@ Requires Android 8.0+ (API 26). No internet required for PTT; internet is only u
 | **Star topology** | One hub device accepts N clients over Bluetooth Classic |
 | **Half-duplex lock** | Only one device transmits at a time; others receive BLOCKED |
 | **Opus compression** | ~80 bytes per 40 ms frame vs 1280 bytes raw PCM (16× reduction) |
+| **Squelch gate** | RMS threshold (300.0) with 6-frame hold (240 ms tail) suppresses silence |
 | **Auto-reconnect** | Exponential backoff on drop (2 s → 30 s cap, 10 attempts) |
 | **PTT — touch** | Hold the on-screen button |
 | **PTT — volume key** | Hold Vol ↑ when a channel is active |
 | **PTT — notification** | Tap Transmit / Stop from the notification shade or lock screen |
+| **Transmission timeout** | Auto-releases PTT after 30 s; 5-second countdown warning with haptic pulses |
+| **VU meter** | Real-time audio level bar for TX and RX; sqrt-scaled, color-coded, 120 ms RX decay |
+| **Haptic feedback** | Distinct vibration patterns for PTT open, close, blocked, RX start, TX warning |
+| **Channel persistence** | Last channel name + role saved; one-tap rejoin on next launch |
+| **Channel discovery** | Hub advertises via SDP; clients scan bonded devices and join without typing a name |
+| **Wake lock** | `PARTIAL_WAKE_LOCK` held while in a channel — keeps reconnect coroutines alive on Doze |
+| **Audio focus** | Requests `AUDIOFOCUS_GAIN` while in channel; releases PTT on any focus loss |
 | **Riding mode** | Wake word → speech → Gemini parses the command hands-free |
 | **Speaker routing** | Toggle earpiece ↔ loudspeaker |
 
@@ -57,15 +65,24 @@ Open in Android Studio (Electric Eel or later), sync Gradle, and run on two or m
 
 1. Launch on the **hub device** (the one all others will connect to).
 2. Type a channel name and tap **Create Channel (Host)**.
-3. The hub begins advertising the channel UUID derived from that name.
+3. The hub begins advertising the channel UUID derived from that name and opens a discovery socket so clients can find it by scanning.
 
 ### Joining a channel
 
+**Via scan (recommended):**
 1. Launch on each **client device**.
-2. Type the **same channel name** and tap **Join Channel**.
-3. The app walks bonded devices looking for the hub; on success the member roster appears.
+2. Tap **Scan for Channels**.
+3. Any hub that is currently hosting will appear as a card. Tap **Join**.
+
+**Via manual entry:**
+1. Type the channel name and tap **Join Channel**.
+2. The app walks bonded devices looking for the hub UUID; on success the member roster appears.
 
 > If the hub is not found, the app retries automatically with exponential backoff and shows "Reconnecting… (attempt N)" in the status card.
+
+### Rejoining
+
+After leaving a channel the channel name and role (host / client) are saved. On the next launch a **Last session** card appears with a one-tap rejoin button.
 
 ### Push to talk
 
@@ -78,6 +95,17 @@ Three ways to transmit, all interchangeable:
 | **Notification** | Tap **Transmit** in the persistent notification; tap **Stop** to release |
 
 If someone else is already transmitting, the button shows **CHANNEL BUSY** and your transmission is rejected until they release.
+
+Transmissions auto-release after **30 seconds**. Starting at 5 seconds remaining the button turns amber and shows a countdown ("5s LEFT" … "1s LEFT"), and the device vibrates once per second as a warning.
+
+### VU meter
+
+A narrow bar below the PTT button shows live audio level:
+
+- **TX** label while you are transmitting (your mic level)
+- **RX** label while receiving (incoming audio level)
+- Color shifts from primary → amber → red as level rises
+- RX bar decays to zero 120 ms after the last received frame
 
 ### Riding mode
 
@@ -123,6 +151,13 @@ MainActivity
     │   ├── BluetoothSocket           RFCOMM connection to hub
     │   └── manageClientChannel()     Auto-reconnect loop with exponential backoff
     │
+    ├── ChannelDiscovery              Hub-side SDP advertisement
+    │   └── BluetoothServerSocket     On DISCOVERY_UUID; writes channel name, closes
+    │
+    ├── ChannelScanner                Client-side channel discovery
+    │   ├── parallel async probes     One per bonded device on Dispatchers.IO
+    │   └── results / scanning        StateFlow<List<FoundChannel>>, StateFlow<Boolean>
+    │
     ├── AudioEngine                   Audio I/O
     │   ├── AudioRecord               Capture — VOICE_COMMUNICATION source, 16 kHz mono
     │   └── AudioTrack                Playback — USAGE_VOICE_COMMUNICATION
@@ -130,6 +165,11 @@ MainActivity
     ├── OpusCodec                     Concentus pure-Java Opus compression
     │   ├── encode(pcmBytes)          Buffers to 640-sample frame → Opus packet (~80 bytes)
     │   └── decode(opusBytes)         Opus packet → raw PCM for AudioTrack
+    │
+    ├── HapticEngine                  Vibration patterns (pttOpen/Close/blocked/rxStart/txWarning)
+    ├── ChannelPrefs                  SharedPreferences — last channel name + role
+    ├── PowerManager.WakeLock         PARTIAL_WAKE_LOCK held while role != NONE
+    ├── AudioFocusRequest             AUDIOFOCUS_GAIN; any loss → stopPtt()
     │
     └── Riding-mode pipeline (lazy — created on first use)
         ├── WakeWordDetector          Porcupine on-device detection
@@ -141,16 +181,34 @@ MainActivity
 
 ```
 Mic → AudioEngine.capturedAudio (SharedFlow<ByteArray>)
-        ├── isTransmitting  → OpusCodec.encode() → Hub/ClientConnectionManager.sendAudio()
+        ├── isTransmitting  → update audioLevel (VU TX)
+        │                   → SquelchGate.shouldTransmit()
+        │                   → OpusCodec.encode() → Hub/ClientConnectionManager.sendAudio()
         └── ridingMode      → WakeWordDetector.feedAudio()
                                   └── on detection → stop capture → STT → Gemini
                                                     → executeCommand()
                                                     → restart capture
 
-Inbound Opus packet → OpusCodec.decode() → AudioEngine.playFrame() → speaker
+Inbound Opus packet → OpusCodec.decode() → update audioLevel (VU RX)
+                                          → schedule 120 ms decay to 0
+                                          → AudioEngine.playFrame() → speaker
 ```
 
-### Frame protocol
+### Channel discovery protocol
+
+```
+Hub (ChannelDiscovery)                 Client (ChannelScanner)
+──────────────────────                 ──────────────────────
+listenUsingInsecureRfcomm              for each bonded device (parallel):
+  (DISCOVERY_UUID)          ←connect─    createInsecureRfcomm(DISCOVERY_UUID)
+                            ←──────── socket.connect()
+write(channelName UTF-8)   ─────────→
+close()                               read all bytes → FoundChannel(name, deviceName)
+```
+
+`DISCOVERY_UUID = UUID.nameUUIDFromBytes("tw.discovery".toByteArray(UTF-8))`
+
+### Frame protocol (PTT channel)
 
 Binary frames over RFCOMM: `[TYPE : 1 byte][LENGTH : 2 bytes big-endian][PAYLOAD : N bytes]`
 
@@ -183,21 +241,28 @@ app/src/main/java/com/talkiewalkie/
   audio/
     AudioEngine.kt                      AudioRecord + AudioTrack wrapper; SAMPLE_RATE = 16 000
     OpusCodec.kt                        Concentus Opus encode/decode; FRAME_BYTES = 1 280
+    SquelchGate.kt                      RMS gate; threshold 300.0, 6-frame hold
   channel/
-    ChannelManager.kt                   UUID derivation from channel name
+    ChannelDiscovery.kt                 Hub-side SDP discovery responder
+    ChannelManager.kt                   UUID derivation for channel and discovery
+    ChannelScanner.kt                   Parallel bonded-device probe; FoundChannel data class
     ClientConnectionManager.kt          RFCOMM client socket, inbound/outbound frame I/O
     HalfDuplexLock.kt                   AtomicReference<String?> — compareAndSet half-duplex
     HubConnectionManager.kt             RFCOMM server, per-client coroutines, roster broadcast
+  haptic/
+    HapticEngine.kt                     VibrationEffect patterns for all PTT events
   model/
     WalkieState.kt                      ConnectionState sealed class, WalkieState data class, Role enum
+  prefs/
+    ChannelPrefs.kt                     SharedPreferences wrapper — save/load/clear last channel
   protocol/
     Frame.kt                            Sealed class for all 6 frame types
     FrameCodec.kt                       encode(Frame) / decode(InputStream) binary codec
   service/
     WalkieTalkieService.kt              Foreground service; orchestrates all subsystems
   ui/
-    ChannelScreen.kt                    Channel name entry, Create / Join buttons
-    MainScreen.kt                       Member roster, PTT button, riding mode + speaker toggles
+    ChannelScreen.kt                    Scan for channels, last-session rejoin, manual name entry
+    MainScreen.kt                       Member roster, PTT button (with countdown), VU meter, toggles
     theme/Theme.kt                      Material 3 theme
   voice/
     SpeechToTextEngine.kt               Android SpeechRecognizer wrapped in suspendCancellableCoroutine
@@ -207,12 +272,12 @@ app/src/main/java/com/talkiewalkie/
     WakeWordDetector.kt                 Porcupine integration; feeds 512-sample frames
 
 app/src/test/java/com/talkiewalkie/
-  audio/OpusCodecTest.kt                Round-trip encode/decode, byte helper extensions
-  channel/
-    ChannelManagerTest.kt               UUID stability and case sensitivity
-    HalfDuplexLockTest.kt               Contention test with CountDownLatch
-  model/WalkieStateTest.kt              ConnectionState labels, isActive, copy semantics
-  protocol/FrameCodecTest.kt            Round-trip all 6 frame types, truncation/error paths
+  model/WalkieStateTest.kt              ConnectionState labels, isActive, copy semantics,
+                                        txSecondsLeft countdown range, audioLevel independence
+  prefs/ChannelPrefsTest.kt             Round-trip, clear, overwrite, Role.NONE filter,
+                                        corrupt/missing key defence (Robolectric)
+  service/TxTimeoutTest.kt              Virtual-time countdown: pre-warning silence, all 5 warnings,
+                                        per-second spacing, cancellation at each phase
 ```
 
 ---
@@ -225,7 +290,13 @@ app/src/test/java/com/talkiewalkie/
 | `FRAME_BYTES` | 1 280 bytes | 40 ms of mono 16-bit PCM; aligns to Opus frame size |
 | Opus frame | 640 samples | 40 ms at 16 kHz |
 | Opus bitrate | 16 000 bps | ~80 bytes/frame vs 1 280 raw — 16× compression |
+| `TX_TIMEOUT_SECS` | 30 s | Auto-release PTT after this long |
+| `TX_WARNING_SECS` | 5 s | Countdown warning window before timeout |
+| Squelch threshold | 300.0 RMS | Below this, silence is not transmitted |
+| Squelch hold | 6 frames (240 ms) | Tail after last loud frame |
+| RX level decay | 120 ms | VU bar drops to 0 after last received frame |
 | BT protocol | RFCOMM | Bluetooth Classic; no BLE |
+| `DISCOVERY_UUID` | `tw.discovery` (name-UUID) | Hub advertisement for channel scan |
 | Wake word | PORCUPINE (built-in) | Swap `setKeyword()` for a custom `.ppn` file |
 | Reconnect backoff | 2 s → 30 s cap | 10 attempts before giving up |
 | Notification PTT | `ACTION_PTT_START` / `ACTION_PTT_STOP` | Delivered via `onStartCommand()` |
