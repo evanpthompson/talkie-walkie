@@ -20,6 +20,11 @@ sealed class HubEvent {
 }
 
 private data class ConnectedClient(
+    // Stable identity — the remote device's Bluetooth MAC address. Used as the
+    // clients map key and the half-duplex lock token so two clients sharing
+    // the same user-visible device name can never collide with each other.
+    val id: String,
+    // Display-only; comes from the client's Hello frame and may not be unique.
     val name: String,
     val socket: BluetoothSocket,
     val outbox: Channel<ByteArray> = Channel(capacity = 256),
@@ -32,6 +37,7 @@ class HubConnectionManager(
     private val localName: String,
     private val scope: CoroutineScope,
 ) {
+    // Keyed by client id (MAC address), not display name — see ConnectedClient.id.
     private val clients      = ConcurrentHashMap<String, ConnectedClient>()
     private val txLock       = HalfDuplexLock()
     private var serverSocket: BluetoothServerSocket? = null
@@ -39,7 +45,7 @@ class HubConnectionManager(
     private val _events = MutableSharedFlow<HubEvent>(extraBufferCapacity = 256)
     val events: SharedFlow<HubEvent> = _events.asSharedFlow()
 
-    val memberNames: List<String> get() = listOf(localName) + clients.keys().toList()
+    val memberNames: List<String> get() = listOf(localName) + clients.values.map { it.name }
 
     @SuppressLint("MissingPermission")
     fun start() {
@@ -55,15 +61,16 @@ class HubConnectionManager(
     }
 
     private suspend fun handleClient(socket: BluetoothSocket) {
-        val input  = socket.inputStream
-        val output = socket.outputStream
-        var clientName = socket.remoteDevice.address
+        val input    = socket.inputStream
+        val output   = socket.outputStream
+        val clientId = socket.remoteDevice.address
+        var displayName = clientId
 
         val first = FrameCodec.decode(input)
-        if (first is Frame.Hello) clientName = first.deviceName
+        if (first is Frame.Hello) displayName = first.deviceName
 
-        val client = ConnectedClient(clientName, socket)
-        clients[clientName] = client
+        val client = ConnectedClient(clientId, displayName, socket)
+        clients[clientId] = client
 
         client.writerJob = scope.launch(Dispatchers.IO) {
             for (bytes in client.outbox) {
@@ -71,42 +78,42 @@ class HubConnectionManager(
             }
         }
 
-        sendTo(clientName, Frame.Roster(memberNames))
-        broadcastExcept(clientName, Frame.Roster(memberNames))
-        _events.emit(HubEvent.ClientJoined(clientName))
+        sendTo(clientId, Frame.Roster(memberNames))
+        broadcastExcept(clientId, Frame.Roster(memberNames))
+        _events.emit(HubEvent.ClientJoined(displayName))
 
         try {
             while (true) {
                 val frame = FrameCodec.decode(input) ?: break
                 when (frame) {
-                    is Frame.Audio -> handleAudio(clientName, frame.pcm)
-                    is Frame.Busy  -> handleBusy(clientName)
-                    is Frame.Free  -> handleFree(clientName)
+                    is Frame.Audio -> handleAudio(clientId, frame.pcm)
+                    is Frame.Busy  -> handleBusy(clientId)
+                    is Frame.Free  -> handleFree(clientId)
                     else           -> {}
                 }
             }
         } finally {
-            dropClient(clientName, socket)
+            dropClient(clientId, socket)
         }
     }
 
-    private suspend fun handleAudio(from: String, pcm: ByteArray) {
-        if (txLock.current == from) {
-            _events.emit(HubEvent.AudioFrame(from, pcm))
-            relayAudioExcept(from, pcm)
+    private suspend fun handleAudio(fromId: String, pcm: ByteArray) {
+        if (txLock.current == fromId) {
+            _events.emit(HubEvent.AudioFrame(clients[fromId]?.name ?: fromId, pcm))
+            relayAudioExcept(fromId, pcm)
         }
     }
 
-    private suspend fun handleBusy(from: String) {
-        if (txLock.acquire(from)) {
-            _events.emit(HubEvent.TransmitterChanged(from))
+    private suspend fun handleBusy(fromId: String) {
+        if (txLock.acquire(fromId)) {
+            _events.emit(HubEvent.TransmitterChanged(clients[fromId]?.name ?: fromId))
         } else {
-            sendTo(from, Frame.Blocked)
+            sendTo(fromId, Frame.Blocked)
         }
     }
 
-    private suspend fun handleFree(from: String) {
-        if (txLock.release(from)) {
+    private suspend fun handleFree(fromId: String) {
+        if (txLock.release(fromId)) {
             _events.emit(HubEvent.TransmitterChanged(null))
         }
     }
@@ -127,34 +134,35 @@ class HubConnectionManager(
         clients.values.forEach { it.outbox.trySend(encoded) }
     }
 
-    private fun relayAudioExcept(exclude: String, pcm: ByteArray) {
+    private fun relayAudioExcept(excludeId: String, pcm: ByteArray) {
         val encoded = FrameCodec.encode(Frame.Audio(pcm))
-        clients.forEach { (name, client) ->
-            if (name != exclude) client.outbox.trySend(encoded)
+        clients.forEach { (id, client) ->
+            if (id != excludeId) client.outbox.trySend(encoded)
         }
     }
 
-    private fun sendTo(name: String, frame: Frame) {
-        clients[name]?.outbox?.trySend(FrameCodec.encode(frame))
+    private fun sendTo(id: String, frame: Frame) {
+        clients[id]?.outbox?.trySend(FrameCodec.encode(frame))
     }
 
-    private fun broadcastExcept(exclude: String, frame: Frame) {
+    private fun broadcastExcept(excludeId: String, frame: Frame) {
         val encoded = FrameCodec.encode(frame)
-        clients.forEach { (name, client) ->
-            if (name != exclude) client.outbox.trySend(encoded)
+        clients.forEach { (id, client) ->
+            if (id != excludeId) client.outbox.trySend(encoded)
         }
     }
 
-    private suspend fun dropClient(name: String, socket: BluetoothSocket) {
-        clients.remove(name)?.let {
+    private suspend fun dropClient(id: String, socket: BluetoothSocket) {
+        val removed = clients.remove(id)
+        removed?.let {
             it.writerJob?.cancel()
             runCatching { socket.close() }
         }
-        if (txLock.release(name)) {
+        if (txLock.release(id)) {
             _events.emit(HubEvent.TransmitterChanged(null))
         }
-        _events.emit(HubEvent.ClientLeft(name))
-        broadcastExcept(name, Frame.Roster(memberNames))
+        _events.emit(HubEvent.ClientLeft(removed?.name ?: id))
+        broadcastExcept(id, Frame.Roster(memberNames))
     }
 
     fun disconnect() {

@@ -99,10 +99,12 @@ a hands-free, phone-carrier-independent PTT channel is needed.
   owned by the hub and is the single source of truth for who may transmit.
   A client's local `isBlocked` flag is advisory UI state driven by
   `Frame.Blocked`/`Frame.Free`, not the lock itself.
-- Device names are used as client identity (`clientName`, keyed in a
-  `ConcurrentHashMap<String, ConnectedClient>` on the hub). **Two clients
-  with the same Bluetooth device name will collide** — the second overwrites
-  the first's map entry. Not handled today (see Part 2).
+- Clients are keyed on the hub by a stable id (`ConnectedClient.id`, the
+  remote device's Bluetooth MAC address from `socket.remoteDevice.address`)
+  in a `ConcurrentHashMap<String, ConnectedClient>`. Device name
+  (`ConnectedClient.name`, from the client's `Hello` frame) is display-only
+  and does not need to be unique — two clients sharing a name no longer
+  collide in the map or in half-duplex lock ownership.
 
 ### Connection state machine
 
@@ -215,8 +217,6 @@ Bluetooth connection. No battery-optimization-exemption request
 
 ### Known limitations of v1 (carried into Part 2 as concrete gaps)
 
-- Duplicate device names collide in the hub's client map (last one wins,
-  silently).
 - Hub failure/departure has no recovery path — full channel loss.
 - 10-attempt reconnect exhaustion is silent beyond the state label; no
   distinct "give up" notification or user-facing explanation.
@@ -243,10 +243,10 @@ features, no BLE, no mesh in this phase.
 
 **Requirements:**
 
-1. **Duplicate-name collision fix.** Key hub-side clients by something
-   stable and unique (e.g. `BluetoothDevice.address`, or a generated
-   session id sent in `Hello`) instead of the user-visible device name;
-   keep device name only for display.
+1. ~~**Duplicate-name collision fix.**~~ Done — `HubConnectionManager` now
+   keys clients by `BluetoothDevice.address` (`ConnectedClient.id`); device
+   name is display-only (`ConnectedClient.name`, from `Hello`) and no
+   longer participates in the clients map key or half-duplex lock token.
 2. **Explicit give-up signal.** When `manageClientChannel` exhausts its 10
    reconnect attempts, surface a distinguishable state/notification (not
    just falling silently back to `Disconnected`) so the rider knows to
