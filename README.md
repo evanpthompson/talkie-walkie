@@ -58,7 +58,19 @@ Before launching the app, pair all devices with each other via Android **Setting
 
 ### 3. Build and run
 
-Open in Android Studio (Electric Eel or later), sync Gradle, and run on two or more Android 8+ devices. The Gradle wrapper (`./gradlew`) is checked in, pinned to Gradle 8.6 — no local Gradle install required.
+**Android Studio:** open the project (Electric Eel or later), sync Gradle, run on two or more Android 8+ devices.
+
+**Command line (no Android Studio needed):** the Gradle wrapper (`./gradlew`) is checked in, pinned to Gradle 8.6, so `./gradlew assembleDebug` / `./gradlew testDebugUnitTest` work standalone — only the Android SDK command-line tools are required. Opus compression (Concentus) is vendored locally under `concentus/`, so the build has no third-party JVM dependency resolution flakiness beyond Google/Maven Central.
+
+To also boot emulators, install, and launch without ever opening Android Studio's UI, see [`scripts/run-emulators.sh`](scripts/run-emulators.sh):
+
+```bash
+./scripts/run-emulators.sh                                   # boots the two default AVDs
+./scripts/run-emulators.sh Pixel_7_API_35                    # boot just one
+./scripts/run-emulators.sh --list-avds                       # see what's installed
+```
+
+It boots each AVD headless, builds `assembleDebug` once, installs + pre-grants runtime permissions + launches on every booted device, and streams `logcat` per device to `scripts/.emulator-logs/`. Note: Bluetooth Classic RFCOMM (what this app's PTT protocol uses) between two *emulators* isn't reliably supported by the Android emulator's virtual Bluetooth — this script is for build/install/launch/crash smoke-testing on N instances, not a substitute for testing an actual PTT session, which needs at least one real device.
 
 ---
 
@@ -165,7 +177,7 @@ MainActivity
     │   ├── AudioRecord               Capture — VOICE_COMMUNICATION source, 16 kHz mono
     │   └── AudioTrack                Playback — USAGE_VOICE_COMMUNICATION
     │
-    ├── OpusCodec                     Concentus pure-Java Opus compression
+    ├── OpusCodec                     Concentus pure-Java Opus compression (concentus/, vendored)
     │   ├── encode(pcmBytes)          Buffers to 640-sample frame → Opus packet (~80 bytes)
     │   └── decode(opusBytes)         Opus packet → raw PCM for AudioTrack
     │
@@ -239,6 +251,12 @@ Hub and clients independently compute the same UUID from the same name string, s
 ## Project structure
 
 ```
+concentus/                              Vendored pure-Java Opus codec (org.concentus) — see concentus/NOTICE.md
+  src/main/java/org/concentus/          124 files, unmodified from upstream lostromb/concentus v1.0-java
+
+scripts/
+  run-emulators.sh                      Boot N AVDs headless, build, install, launch, tail logcat — no Android Studio needed
+
 app/src/main/java/com/talkiewalkie/
   MainActivity.kt                       Entry point, permissions, volume key PTT, window flags
   audio/

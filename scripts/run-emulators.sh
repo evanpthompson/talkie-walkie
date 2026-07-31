@@ -4,6 +4,10 @@
 # of them, launch the app, and tail logcat — all via SDK command-line tools
 # (emulator/adb), no Android Studio GUI required.
 #
+# The build itself (assembleDebug) resolves entirely from Google/Maven
+# Central plus the vendored concentus/ module — no jitpack dependency to go
+# flaky on. See docs/spec.md and concentus/NOTICE.md for background.
+#
 # Caveat: Bluetooth Classic RFCOMM (what this app uses for PTT) between two
 # *emulators* is not reliably supported — emulator-to-emulator virtual
 # Bluetooth varies by emulator version and mostly targets BLE, not Classic.

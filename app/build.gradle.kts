@@ -78,13 +78,16 @@ dependencies {
     // Gemini function calling for natural language voice commands
     implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
 
-    // Opus audio compression — pure-Java Concentus port, no native code
-    implementation("com.github.lostromb:concentus:v1.0.2")
+    // Opus audio compression — pure-Java Concentus port, no native code.
+    // Vendored locally; see concentus/NOTICE.md for why.
+    implementation(project(":concentus"))
 
     // ── unit tests ────────────────────────────────────────────────────────────
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
     testImplementation("org.robolectric:robolectric:4.12.2")
+    // ApplicationProvider — needed by Robolectric tests (ChannelPrefsTest)
+    testImplementation("androidx.test:core:1.5.0")
 
     // ── instrumented / Compose UI tests ───────────────────────────────────────
     androidTestImplementation(composeBom)

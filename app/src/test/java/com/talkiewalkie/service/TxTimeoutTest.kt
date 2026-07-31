@@ -119,8 +119,10 @@ class TxTimeoutTest {
     @Test fun cancelOnLastWarningPreventsStop() = runTest {
         val (warnings, stopped) = launchCountdown()
         val job = coroutineContext[Job]!!.children.first()
-        // Advance to after the 4th warning (remaining = 1) but before the delay expires
-        testScheduler.advanceTimeBy(waitMs + 4 * 1_000L)
+        // Advance to after the 4th warning (remaining = 2) but before the 5th
+        // (remaining = 1) fires — that next `add` happens at exactly this
+        // boundary, so stop one tick short of it.
+        testScheduler.advanceTimeBy(waitMs + 4 * 1_000L - 1)
         runCurrent()
         assertEquals(listOf(5, 4, 3, 2), warnings)
 

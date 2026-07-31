@@ -3,13 +3,9 @@ package com.talkiewalkie.voice
 import com.google.ai.client.generativeai.GenerativeModel
 import com.google.ai.client.generativeai.type.FunctionCallPart
 import com.google.ai.client.generativeai.type.FunctionDeclaration
-import com.google.ai.client.generativeai.type.FunctionType
 import com.google.ai.client.generativeai.type.Schema
 import com.google.ai.client.generativeai.type.Tool
 import com.google.ai.client.generativeai.type.content
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.boolean
-import kotlinx.serialization.json.content
 
 class VoiceCommandProcessor(apiKey: String) {
 
@@ -43,24 +39,17 @@ class VoiceCommandProcessor(apiKey: String) {
                 ?.firstOrNull()
                 ?: return VoiceCommand.Unknown(spokenText)
 
-            val args = call.args ?: emptyMap()
+            // FunctionCallPart.args is a plain Map<String, String> in this SDK version.
+            val args = call.args
 
             when (call.name) {
-                "create_channel" -> {
-                    val name = (args["channel_name"] as? JsonPrimitive)?.content.orEmpty()
-                    VoiceCommand.CreateChannel(name)
-                }
-                "join_channel" -> {
-                    val name = (args["channel_name"] as? JsonPrimitive)?.content.orEmpty()
-                    VoiceCommand.JoinChannel(name)
-                }
+                "create_channel"     -> VoiceCommand.CreateChannel(args["channel_name"].orEmpty())
+                "join_channel"       -> VoiceCommand.JoinChannel(args["channel_name"].orEmpty())
                 "start_transmitting" -> VoiceCommand.StartTransmitting
                 "stop_transmitting"  -> VoiceCommand.StopTransmitting
                 "disconnect"         -> VoiceCommand.Disconnect
-                "set_riding_mode"    -> {
-                    val enabled = (args["enabled"] as? JsonPrimitive)?.boolean ?: true
-                    VoiceCommand.SetRidingMode(enabled)
-                }
+                "set_riding_mode"    ->
+                    VoiceCommand.SetRidingMode(args["enabled"]?.toBooleanStrictOrNull() ?: true)
                 else -> VoiceCommand.Unknown(spokenText)
             }
         } catch (_: Exception) {
@@ -74,65 +63,44 @@ private val walkieTalkieTools = Tool(
         FunctionDeclaration(
             name        = "create_channel",
             description = "Create a new channel and become the hub for other devices",
-            parameters  = Schema(
-                type       = FunctionType.OBJECT,
-                properties = mapOf(
-                    "channel_name" to Schema(
-                        type        = FunctionType.STRING,
-                        description = "Name of the channel to create"
-                    )
-                ),
-                required = listOf("channel_name")
-            )
+            parameters  = listOf(
+                Schema.str("channel_name", "Name of the channel to create")
+            ),
+            requiredParameters = listOf("channel_name")
         ),
         FunctionDeclaration(
             name        = "join_channel",
             description = "Join an existing channel hosted by another device",
-            parameters  = Schema(
-                type       = FunctionType.OBJECT,
-                properties = mapOf(
-                    "channel_name" to Schema(
-                        type        = FunctionType.STRING,
-                        description = "Name of the channel to join"
-                    )
-                ),
-                required = listOf("channel_name")
-            )
+            parameters  = listOf(
+                Schema.str("channel_name", "Name of the channel to join")
+            ),
+            requiredParameters = listOf("channel_name")
         ),
         FunctionDeclaration(
             name        = "start_transmitting",
             description = "Start transmitting the user's voice to the channel",
-            parameters  = emptyObjectSchema()
+            parameters  = emptyList(),
+            requiredParameters = emptyList()
         ),
         FunctionDeclaration(
             name        = "stop_transmitting",
             description = "Stop transmitting audio",
-            parameters  = emptyObjectSchema()
+            parameters  = emptyList(),
+            requiredParameters = emptyList()
         ),
         FunctionDeclaration(
             name        = "disconnect",
             description = "Leave the current channel",
-            parameters  = emptyObjectSchema()
+            parameters  = emptyList(),
+            requiredParameters = emptyList()
         ),
         FunctionDeclaration(
             name        = "set_riding_mode",
             description = "Enable or disable riding mode (hands-free voice command activation)",
-            parameters  = Schema(
-                type       = FunctionType.OBJECT,
-                properties = mapOf(
-                    "enabled" to Schema(
-                        type        = FunctionType.BOOLEAN,
-                        description = "True to enable riding mode, false to disable it"
-                    )
-                ),
-                required = listOf("enabled")
-            )
+            parameters  = listOf(
+                Schema.bool("enabled", "True to enable riding mode, false to disable it")
+            ),
+            requiredParameters = listOf("enabled")
         )
     )
-)
-
-private fun emptyObjectSchema() = Schema(
-    type       = FunctionType.OBJECT,
-    properties = emptyMap(),
-    required   = emptyList()
 )
