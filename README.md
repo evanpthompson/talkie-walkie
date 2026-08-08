@@ -7,6 +7,12 @@ Requires Android 8.0+ (API 26). No internet required for PTT; internet is only u
 See [`docs/spec.md`](docs/spec.md) for the formal system spec (protocol,
 state machine, requirements, known limitations) and the roadmap.
 
+> **Related:**
+> [talkie-walkie-esp32](https://github.com/evanpthompson/talkie-walkie-esp32)
+> takes the same idea to dedicated hardware — ESP32-C5 devices talking
+> directly over ESP-NOW, with no phone and no hub, removing this app's
+> requirement that one rider's phone host the channel for everyone.
+
 ---
 
 ## Features
