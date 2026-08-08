@@ -19,17 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-## Third-party components
-
-This license covers the original work in this repository. It does **not**
-apply to vendored third-party source, which retains its own license:
-
-- `concentus/` — pure-Java Opus port from
-  [lostromb/concentus](https://github.com/lostromb/concentus), licensed
-  BSD-3-Clause by its respective copyright holders (Skype Limited, Xiph.Org
-  Foundation, CSIRO, Microsoft Corporation, and others). See
-  [`concentus/LICENSE`](concentus/LICENSE) and
-  [`concentus/NOTICE.md`](concentus/NOTICE.md).
